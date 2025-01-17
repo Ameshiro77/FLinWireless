@@ -1,11 +1,13 @@
+import torch
 import sys
 import os
+
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.join(current_dir, 'env'))
 sys.path.append(os.path.join(current_dir, 'net'))
 sys.path.append(os.path.join(current_dir, 'policy'))
-import torch
-import argparse  # 添加 argparse 模块
+
+import argparse 
 from gym import spaces
 from env.dataset import FedDataset
 from env.client import *
@@ -25,8 +27,7 @@ if __name__ == '__main__':
     attr_dicts = init_attr_dicts(args.num_clients)
 
     # == 初始化客户端数据集
-    clients = init_clients(args.num_clients, model, optimizer, dataset,
-                           attr_dicts, args)
+    clients = init_clients(args.num_clients, model, optimizer, dataset, attr_dicts, args)
     for i in range(args.num_clients):
         subset = dataset.get_client_data(i)
         clients[i].local_dataset = subset
@@ -43,13 +44,15 @@ if __name__ == '__main__':
                        clients,
                        model=model,
                        optimizer=optimizer)
-    env.reset()
-    policy = RandomPolicy(env.action_space,args)
-
+    state , info = env.reset(args, model, optimizer)
+    policy = RandomPolicy(env.action_space, args)
+    print("env reset!init state:", state)
+    
     print("start training")
     for _ in range(args.global_rounds):
         action = policy.random_action()
         next_state, reward, done, info = env.step(action)
+        print("\nnext_state:", next_state)
         if done:
             break
 
