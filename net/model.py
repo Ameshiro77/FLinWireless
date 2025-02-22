@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from .helpers import SinusoidalPosEmb
+from helpers import SinusoidalPosEmb
 
 
 class MLP(nn.Module):
@@ -29,10 +29,10 @@ class MLP(nn.Module):
         )
         self.final_layer = nn.Tanh()
 
-    def forward(self, x, time, state):
+    def forward(self, x, time, state): #x:action
         t = self.time_mlp(time)
         state = state.reshape(state.size(0), -1)
-        x = torch.cat([x, t, state], dim=1)
+        x = torch.cat([x, t, state], dim=1) #16(t) + action + state
         x = self.mid_layer(x)
         return self.final_layer(x)
 

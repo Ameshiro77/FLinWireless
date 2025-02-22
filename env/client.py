@@ -1,3 +1,4 @@
+import copy
 from torch.utils.data import DataLoader
 import torch.nn as nn
 import torch.nn.functional as F
@@ -32,14 +33,25 @@ class Attribute():
 
 class Client():
 
-    def __init__(self, id, dataset, optim, model, attr_dict: dict, args):
+    def __init__(self, id, dataset,  model, attr_dict: dict, args):
         self.id = id
         self.local_dataset = dataset
         self.model = model
-        self.optimizer = optim
         self.attr_dict = attr_dict
         self.args = args
         self.rb_num = 0
+        self.optimizer = None
+        self.set_optim()
+        
+    def set_optim(self):
+        args = self.args
+        if args.fed_optim == 'adam':
+            client_optimizer = torch.optim.Adam(self.model.parameters(), lr=args.fed_lr) 
+        elif args.fed_optim == 'sgd':
+            client_optimizer = torch.optim.SGD(self.model.parameters(), lr=args.fed_lr)
+        else:
+            raise ValueError("Invalid federated learning optimizer")
+        self.optimizer = client_optimizer
 
     def get_model_parameters(self):
         state_dict = self.model.state_dict()
@@ -53,10 +65,7 @@ class Client():
         return total_bytes
 
     def set_model_parameters(self, model_parameters_dict):
-        state_dict = self.model.state_dict()
-        for key, value in state_dict.items():
-            state_dict[key] = model_parameters_dict[key]
-        self.model.load_state_dict(state_dict)
+        self.model.load_state_dict(model_parameters_dict)
 
     def local_train(self):
 
@@ -65,16 +74,17 @@ class Client():
                                           shuffle=True)
         self.model.cuda().train()
         train_loss = train_acc = train_total = 0
-        print(f"client {self.id} training")
+        if self.args.log_client:
+            print(f"client {self.id} training")
         for epoch in tqdm(range(self.args.local_rounds), desc="Epoch"):
             for X, y in localTrainDataLoader:
                 if torch.cuda.is_available():
                     X, y = X.cuda(), y.cuda()
                 pred = self.model(X)
                 loss = criterion(pred, y)
+                self.optimizer.zero_grad()
                 loss.backward()
                 self.optimizer.step()
-                self.optimizer.zero_grad()
 
                 _, predicted = torch.max(pred, 1)
                 correct = predicted.eq(y).sum().item()
@@ -84,9 +94,8 @@ class Client():
 
         local_model_paras = self.get_model_parameters()
         time, energy = self.get_cost()
-        print(
-            f"loss: {train_loss / train_total}  time: {time}  energy: {energy}"
-        )
+        if self.args.log_client:
+            print(f"loss: {train_loss / train_total}  time: {time}  energy: {energy}")
         return local_model_paras, {
             "loss": train_loss / train_total,
             "accuracy": train_acc / train_total,
@@ -110,7 +119,7 @@ class Client():
 
     def get_communication_time(self):
         R_k = self.get_transmission_rate()
-        Z_k = self.calculate_model_size()
+        Z_k = self.calculate_model_size() * 8  # bytes->bits
         return Z_k / R_k
 
     def get_computation_time(self):
@@ -125,7 +134,8 @@ class Client():
         E = self.args.local_rounds
         D = len(self.local_dataset)
         f = self.attr_dict['cpu_frequency']
-        return C * E * D * (f**2)
+        k = 1e-28
+        return k * C * E * D * (f**2)
 
     def get_communication_energy(self):
         T_com = self.get_communication_time()
@@ -133,19 +143,28 @@ class Client():
         return T_com * p
 
     def get_cost(self):
-        T = self.get_computation_time() + self.get_communication_time()
-        E = self.get_computation_energy() + self.get_communication_energy()
+        cmp_t, com_t = self.get_computation_time(), self.get_communication_time()
+        cmp_e, com_e = self.get_computation_energy(), self.get_communication_energy()
+        if self.args.log_client:
+            print(f"client {self.id} cost:")
+            print(f"cmp T & E : {cmp_t} & {cmp_e}")
+            print(f"com T & E : {com_t} & {com_e}")
+        T = cmp_t + com_t
+        E = cmp_e + com_e
         return T, E
 
 
 # 初始化客户端,根据一个同长度的属性列表
-def init_clients(clients_num, model, optimizer, dataset, attr_dicts, args):
-    assert len(attr_dicts
-               ) == clients_num, "attr_dicts length must equal to clients_num"
+def init_clients(clients_num, model,  dataset, attr_dicts, args):
+    assert len(attr_dicts) == clients_num, "attr_dicts length must equal to clients_num"
     clients = []
     for i in range(clients_num):
+        # 为每个客户端创建独立的模型和优化器副本
+        client_model = copy.deepcopy(model)
         clients.append(
-            Client(i, dataset, optimizer, model, attr_dicts[i], args))
+            Client(i, dataset, client_model, attr_dicts[i], args)
+        )
+
     return clients
 
 
@@ -173,6 +192,9 @@ if __name__ == '__main__':
     dataset = FedDataset(args)
     attr_dicts = init_attr_dicts(client_num)
     model = resnet18()
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
-    clients = init_clients(client_num, model, optimizer, dataset, attr_dicts,
+    clients = init_clients(client_num, model, dataset, attr_dicts,
                            args)
+    for client in clients:
+        local_model_params, metrics = client.local_train()
+
+    print("Training completed for all clients.")
