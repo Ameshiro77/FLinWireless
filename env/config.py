@@ -50,6 +50,8 @@ def get_args():
 
 
     # rl traning
+    parser.add_argument('--algo',type=str, default='diff_sac')
+                        
     parser.add_argument('--epochs', type=int, default=3, help=':is epsilons')
     parser.add_argument('--actor_lr', type=float, default=1e-3)
     parser.add_argument('--critic_lr', type=float, default=1e-3)
@@ -59,4 +61,9 @@ def get_args():
     parser.add_argument('--test_num', type=int, default=1, help='testing epochs')
     parser.add_argument('--datas_per_update', type=int, default=4, help='may large is ok.NOT DATALOADER!')
     parser.add_argument('--update_per_step', type=float, default=1, help='')
+    
+    parser.add_argument('--resume', action='store_true', default=False, help='resume training')
+    parser.add_argument('--evaluate', action='store_true', default=False, help='evaluate')
+    parser.add_argument('--ckpt_path', type=str, default='./diff_sacckpt.pth', help='save path')
+    
     return parser.parse_args()

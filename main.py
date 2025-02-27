@@ -7,6 +7,7 @@ sys.path.append(os.path.join(current_dir, 'env'))  # noqa
 sys.path.append(os.path.join(current_dir, 'net'))  # noqa
 sys.path.append(os.path.join(current_dir, 'policy'))  # noqa
 
+import gym
 import torch
 from gym import spaces
 from env.dataset import FedDataset
@@ -21,7 +22,7 @@ from tianshou.trainer import onpolicy_trainer, offpolicy_trainer
 from tianshou.data import Collector, VectorReplayBuffer
 from torch.utils.tensorboard import SummaryWriter
 from tianshou.utils import BasicLogger
-from policy.diffpolicy import DiffusionSAC 
+from policy.diffpolicy import DiffusionSAC
 from net.model import *
 from net.diffusion import *
 from logger import InfoLogger
@@ -39,6 +40,7 @@ def run(env, args):
         if done:
             break
     env.close()
+
 
 
 if __name__ == '__main__':
@@ -67,7 +69,7 @@ if __name__ == '__main__':
 
     # ======================
     # 使用tianshou进行训练
-    
+
     # 计算 state_shape
     state_dim = 0
     for key, space in env.observation_space.spaces.items():
@@ -78,21 +80,17 @@ if __name__ == '__main__':
         else:
             raise ValueError(f"Unsupported space type: {type(space)}")
     action_dim = 10
-    
+
     # === 指定 actor 以及对应optim ===
-    actor_net = MLP(
-        state_dim=state_dim,
-        action_dim=action_dim,
-        hidden_dim=256
-    )
+    actor_net = MLP(state_dim=state_dim, action_dim=action_dim, hidden_dim=256)
     actor = Diffusion(
         state_dim=state_dim,
         action_dim=action_dim,
         model=actor_net,
         max_action=100,
     ).to(args.device)
-    actor_optim = torch.optim.Adam(actor.parameters(),args.actor_lr)
-    
+    actor_optim = torch.optim.Adam(actor.parameters(), args.actor_lr)
+
     # === 指定 critic 以及对应optim ===
     # critic = DoubleCritic(
     #     state_dim=state_shape,
@@ -101,6 +99,7 @@ if __name__ == '__main__':
     # ).to(args.device)
     # critic_optim = torch.optim.Adam(critic.parameters(), lr=1e-3)
     class Critic(torch.nn.Module):
+
         def __init__(self, state_dim, action_dim):
             super(Critic, self).__init__()
             self.fc1 = torch.nn.Linear(state_dim + action_dim, 256)  # 输入为状态和动作的拼接
@@ -111,41 +110,52 @@ if __name__ == '__main__':
             x = torch.cat([obs, act], dim=-1)  # 假设状态和动作在最后一维拼接
             x = F.relu(self.fc1(x))
             return self.fc2(x)
-    critic = Critic(state_dim,action_dim).to(args.device)
+
+    critic = Critic(state_dim, action_dim).to(args.device)
     critic_optim = torch.optim.Adam(critic.parameters(), lr=args.critic_lr)
 
+    # === 初始化RL模型 ===
+    policy = DiffusionSAC(actor, actor_optim, 10, critic, critic_optim, args.device, TOTAL_BLOCKS)
+    PATH = args.algo + '_ckpt.pth'
+    def save_best_fn(model):
+        torch.save(model.state_dict(), PATH)
+        
+    if args.resume == True or args.evaluate == True:
+        print("model path:",PATH)
+        policy.load_state_dict(torch.load(PATH))
+        print("model loaded!")
 
-
-    # === 初始化RL模型 === 
-    policy = DiffusionSAC(
-        actor,
-        actor_optim,
-        10,
-        critic,
-        critic_optim,
-        args.device,
-        TOTAL_BLOCKS
-    )
-
+    
     # tianshou 相关配置
     buffer = VectorReplayBuffer(64, 1)
     train_collector = Collector(policy, train_envs, buffer=buffer)
     test_collector = Collector(policy, test_envs, buffer=buffer)
 
-    writer = SummaryWriter('logs/exp')
-    logger = InfoLogger(writer)  # 创建基础日志记录器
 
-    result = offpolicy_trainer(
-        policy,
-        train_collector,
-        test_collector,
-        max_epoch=args.epochs,
-        step_per_epoch=args.global_rounds,
-        step_per_collect=args.global_rounds,
-        episode_per_test=args.test_num,
-        batch_size=args.datas_per_update,
-        update_per_step=args.update_per_step,
-        logger=logger,
-    )
+    if not args.evaluate:
+        from datetime import datetime
+        now = datetime.now()
+        timestamp = now.strftime("%Y%m%d_%H%M%S")
+        writer = SummaryWriter(f'logs/exp/{timestamp}')
+        logger = InfoLogger(writer)  # 创建基础日志记录器
+        result = offpolicy_trainer(
+            policy,
+            train_collector,
+            test_collector,
+            max_epoch=args.epochs,
+            step_per_epoch=args.global_rounds,
+            step_per_collect=args.global_rounds,
+            episode_per_test=args.test_num,
+            batch_size=args.datas_per_update,
+            update_per_step=args.update_per_step,
+            logger=logger,
+            save_best_fn = save_best_fn
+        )
 
-    torch.save(policy.state_dict(), 'dqn_policy.pth')
+    np.random.seed(args.seed)
+    env, _, test_env = make_env(args, dataset, clients, model=model)
+    policy.eval()
+    collector = Collector(policy, test_env)
+    result = collector.collect(n_episode=1)
+    rews, lens = result["rews"], result["lens"]
+    print(f"Final reward: {rews.mean()}, length: {lens.mean()}")

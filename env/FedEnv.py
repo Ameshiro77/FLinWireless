@@ -21,7 +21,7 @@ def criterion(pred, y):
 class FederatedEnv(gym.Env):
 
     def __init__(self, args, dataset: FedDataset, clients: list[Client], model=None, name=''):
-        super(FederatedEnv, self).__init__()
+        super().__init__()
 
         # == log
         from datetime import datetime
@@ -85,6 +85,7 @@ class FederatedEnv(gym.Env):
             client.set_model_parameters(self.original_model.state_dict())
             client.set_optim()
 
+        self.latest_acc = 0
         self.set_model_parameters(self.original_model.state_dict())
         self.current_round = 0
         self.latest_global_model = self.get_model_parameters()
@@ -116,6 +117,7 @@ class FederatedEnv(gym.Env):
     '''
 
     def step(self, action):
+        args = self.args
         # 1.已经选取了客户端和带宽(action)
         action = np.array(action)  # 不然np.where返回的是数
         print("\n==action==\n", action)
@@ -144,6 +146,7 @@ class FederatedEnv(gym.Env):
 
         # == 设计奖励 & 返回值 ==
         del_acc = stats_from_test_data['acc'] - self.latest_acc
+        original_del = del_acc
         if self.current_round == 1:  # 0.50~70->10
             del_acc = del_acc * 20
         elif self.current_round <= 3:
@@ -152,7 +155,7 @@ class FederatedEnv(gym.Env):
             del_acc = del_acc * 500
         self.latest_acc = stats_from_test_data['acc']
         reward = (args.rew_alpha * del_acc * 1.5 - args.rew_beta * total_time - args.rew_gamma * total_energy * 2) * 10
-        print(f"reward: {reward} del_acc: {del_acc} total_time: {total_time} total_energy: {total_energy}")
+        print(f"reward: {reward} del_acc: {original_del} total_time: {total_time} total_energy: {total_energy}")
 
         # log
         if self.is_log == True:
@@ -264,8 +267,6 @@ class FederatedEnv(gym.Env):
 
 
 # 必须包装成tianshou可以识别的向量环境。
-
-
 def make_env(args, dataset, clients, model):
     """Wrapper function for env.
     :return: a tuple of (single env, training envs, test envs).

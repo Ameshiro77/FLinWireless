@@ -33,7 +33,7 @@ class Attribute():
 
 class Client():
 
-    def __init__(self, id, dataset,  model, attr_dict: dict, args):
+    def __init__(self, id, dataset, model, attr_dict: dict, args):
         self.id = id
         self.local_dataset = dataset
         self.model = model
@@ -42,11 +42,11 @@ class Client():
         self.rb_num = 0
         self.optimizer = None
         self.set_optim()
-        
+
     def set_optim(self):
         args = self.args
         if args.fed_optim == 'adam':
-            client_optimizer = torch.optim.Adam(self.model.parameters(), lr=args.fed_lr) 
+            client_optimizer = torch.optim.Adam(self.model.parameters(), lr=args.fed_lr)
         elif args.fed_optim == 'sgd':
             client_optimizer = torch.optim.SGD(self.model.parameters(), lr=args.fed_lr)
         else:
@@ -69,14 +69,12 @@ class Client():
 
     def local_train(self):
 
-        localTrainDataLoader = DataLoader(self.local_dataset,
-                                          batch_size=self.args.batch_size,
-                                          shuffle=True)
+        localTrainDataLoader = DataLoader(self.local_dataset, batch_size=self.args.batch_size, shuffle=True)
         self.model.cuda().train()
         train_loss = train_acc = train_total = 0
         if self.args.log_client:
             print(f"client {self.id} training")
-        for epoch in tqdm(range(self.args.local_rounds), desc="Epoch"):
+        for epoch in tqdm(range(self.args.local_rounds), desc="Epoch", disable=not self.args.log_client):
             for X, y in localTrainDataLoader:
                 if torch.cuda.is_available():
                     X, y = X.cuda(), y.cuda()
@@ -155,25 +153,21 @@ class Client():
 
 
 # 初始化客户端,根据一个同长度的属性列表
-def init_clients(clients_num, model,  dataset, attr_dicts, args):
+def init_clients(clients_num, model, dataset, attr_dicts, args):
     assert len(attr_dicts) == clients_num, "attr_dicts length must equal to clients_num"
     clients = []
     for i in range(clients_num):
         # 为每个客户端创建独立的模型和优化器副本
         client_model = copy.deepcopy(model)
-        clients.append(
-            Client(i, dataset, client_model, attr_dicts[i], args)
-        )
+        clients.append(Client(i, dataset, client_model, attr_dicts[i], args))
 
     return clients
 
 
 # 初始化属性列表 根据高斯分布
 def init_attr_dicts(client_num):
-    cpu_frequency = np.random.normal(CPU_FREQUENCY_MEAN, CPU_FREQUENCY_STD,
-                                     client_num)
-    transmit_power = np.random.normal(TRANSMIT_POWER_MEAN, TRANSMIT_POWER_STD,
-                                      client_num)
+    cpu_frequency = np.random.normal(CPU_FREQUENCY_MEAN, CPU_FREQUENCY_STD, client_num)
+    transmit_power = np.random.normal(TRANSMIT_POWER_MEAN, TRANSMIT_POWER_STD, client_num)
     gain = np.random.normal(GAIN_MEAN, GAIN_STD, client_num)
     distance = np.random.normal(DISTANCE_MEAN, DISTANCE_STD, client_num)
 
@@ -192,8 +186,7 @@ if __name__ == '__main__':
     dataset = FedDataset(args)
     attr_dicts = init_attr_dicts(client_num)
     model = resnet18()
-    clients = init_clients(client_num, model, dataset, attr_dicts,
-                           args)
+    clients = init_clients(client_num, model, dataset, attr_dicts, args)
     for client in clients:
         local_model_params, metrics = client.local_train()
 

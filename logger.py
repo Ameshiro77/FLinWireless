@@ -22,10 +22,17 @@ class InfoLogger(BasicLogger):
         # self.write("train/communication_cost", info["communication_cost"], episode_id)
         print(f"Episode {episode_id}: Reward={reward}, global accuracy={info['global_acc']}, global loss={info['global_loss']}\
            		 total_time={info['total_time']},total_energy={info['total_energy']}")
+        
+    # 重写此函数。update_result是learn的返回值。
+    def log_update_data(self, update_result: dict, step: int) -> None:
+        """Use writer to log statistics generated during updating.
 
-    # def write(self, key, value, step):
-    #     # write to tensorboard;
-    #     if self.writer is not None:
-    #         self.writer.add_scalar(key, value, step)
-    #     # write to file;
-    #     self.writer.add_scalar(key, value, step)
+        :param update_result: a dict containing information of data collected in
+            updating stage, i.e., returns of policy.update().
+        :param int step: stands for the timestep the collect_result being logged.
+        """
+        if step - self.last_log_update_step >= self.update_interval:
+            log_data = {f"update/{k}": v for k, v in update_result.items()}
+            self.write("update/gradient_step", step, log_data)
+            self.last_log_update_step = step
+

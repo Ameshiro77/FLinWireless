@@ -9,6 +9,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 
 
 class DiffusionSAC(BasePolicy):
+
     def __init__(
             self,
             actor: Optional[torch.nn.Module],  # 你的 Diffusion 模型
@@ -27,8 +28,7 @@ class DiffusionSAC(BasePolicy):
             lr_maxt: int = 1000,
             pg_coef: float = 1.,
             top_k: int = 5,  # 新增：选择 K 个客户端
-            **kwargs: Any
-    ) -> None:
+            **kwargs: Any) -> None:
         super().__init__(**kwargs)
         assert 0.0 <= alpha <= 1.0, "alpha should be in [0, 1]"
         assert 0.0 <= tau <= 1.0, "tau should be in [0, 1]"
@@ -48,10 +48,8 @@ class DiffusionSAC(BasePolicy):
             self._critic_optim: torch.optim.Optimizer = critic_optim
 
         if lr_decay:
-            self._actor_lr_scheduler = CosineAnnealingLR(
-                self._actor_optim, T_max=lr_maxt, eta_min=0.)
-            self._critic_lr_scheduler = CosineAnnealingLR(
-                self._critic_optim, T_max=lr_maxt, eta_min=0.)
+            self._actor_lr_scheduler = CosineAnnealingLR(self._actor_optim, T_max=lr_maxt, eta_min=0.)
+            self._critic_lr_scheduler = CosineAnnealingLR(self._critic_optim, T_max=lr_maxt, eta_min=0.)
 
         self._alpha = alpha
         self._tau = tau
@@ -72,22 +70,10 @@ class DiffusionSAC(BasePolicy):
         return target_q
 
     def process_fn(self, batch: Batch, buffer: ReplayBuffer, indices: np.ndarray) -> Batch:
-        return self.compute_nstep_return(
-            batch,
-            buffer,
-            indices,
-            self._target_q,
-            self._gamma,
-            self._n_step,
-            self._rew_norm
-        )
+        return self.compute_nstep_return(batch, buffer, indices, self._target_q, self._gamma, self._n_step,
+                                         self._rew_norm)
 
-    def update(
-            self,
-            sample_size: int,
-            buffer: Optional[ReplayBuffer],
-            **kwargs: Any
-    ) -> Dict[str, Any]:
+    def update(self, sample_size: int, buffer: Optional[ReplayBuffer], **kwargs: Any) -> Dict[str, Any]:
         if buffer is None:
             return {}
         self.updating = True
@@ -103,24 +89,27 @@ class DiffusionSAC(BasePolicy):
         self.updating = False
         return result
 
-    def forward(
-            self,
-            batch: Batch,
-            state: Optional[Union[dict, Batch, np.ndarray]] = None,
-            input: str = "obs",
-            model: str = "actor"
-    ) -> Batch:
+    def forward(self,
+                batch: Batch,
+                state: Optional[Union[dict, Batch, np.ndarray]] = None,
+                input: str = "obs",
+                model: str = "actor") -> Batch:
         obs_ = to_torch(batch[input], device=self._device, dtype=torch.float32)
         model_ = self._actor if model == "actor" else self._target_actor
         actions = model_.sample(obs_)  # 使用扩散模型生成概率分布
-        allocations = self.allocate_bandwidth(actions) 
+        
+        # dist = torch.distributions.Distribution(actions)
+        allocations = self.allocate_bandwidth(actions)
         return Batch(act=allocations)
+        # acts = actions.argmax(axis=-1)
+        return Batch(act=acts)
+        
 
     def _update_critic(self, batch: Batch) -> torch.Tensor:
         obs_ = to_torch(batch.obs, device=self._device, dtype=torch.float32)
         acts_ = to_torch(batch.act, device=self._device, dtype=torch.float32)  # 动作是连续值
         target_q = batch.returns
-        current_q = self._critic(obs_, acts_)  # Critic 接受状态和动作
+        current_q = self._critic(obs_, acts_)  # Critic 接受状态和动作 Q(s,a)
         critic_loss = F.mse_loss(current_q, target_q)
         self._critic_optim.zero_grad()
         critic_loss.backward()
@@ -144,22 +133,15 @@ class DiffusionSAC(BasePolicy):
         self.soft_update(self._target_actor, self._actor, self._tau)
         self.soft_update(self._target_critic, self._critic, self._tau)
 
-    def learn(
-            self,
-            batch: Batch,
-            **kwargs: Any
-    ) -> Dict[str, List[float]]:
+    def learn(self, batch: Batch, **kwargs: Any) -> Dict[str, List[float]]:
         # update critic network
         critic_loss = self._update_critic(batch)
         # update actor network
         pg_loss = self._update_policy(batch, update=True)
         # update target networks
         self._update_targets()
-        return {
-            'loss/critic': critic_loss.item(),
-            'loss/policy': pg_loss.item()
-        }
-        
+        return {'loss/critic': critic_loss.item(), 'loss/policy': pg_loss.item(), 'rew': batch.rew}
+
     def allocate_bandwidth(self, probs):
         """实现带宽分配算法：先选 top_n，再线性归一化分配带宽"""
         batch_size, n_clients = probs.shape  # probs 的形状为 (batch_size, n_clients)
@@ -193,11 +175,10 @@ class DiffusionSAC(BasePolicy):
         return torch.stack(allocations)
 
 
-
 if __name__ == "__main__":
-    # 假设我们有一些环境参数和网络定义
+    # test
     action_dim = 5  # 假设动作空间维度为10
-    state_dim = 10   # 假设状态空间维度为20
+    state_dim = 10  # 假设状态空间维度为20
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # 定义Actor和Critic网络
@@ -216,11 +197,7 @@ if __name__ == "__main__":
     from net.diffusion import Diffusion
     from net.model import MLP
 
-    actor_net = MLP(
-        state_dim=state_dim,
-        action_dim=action_dim,
-        hidden_dim=256
-    )
+    actor_net = MLP(state_dim=state_dim, action_dim=action_dim, hidden_dim=256)
     actor = Diffusion(
         state_dim=state_dim,
         action_dim=action_dim,
@@ -230,6 +207,7 @@ if __name__ == "__main__":
     actor_optim = torch.optim.Adam(actor.parameters(), lr=1e-3)
 
     class Critic(torch.nn.Module):
+
         def __init__(self, state_dim, action_dim):
             super(Critic, self).__init__()
             self.fc1 = torch.nn.Linear(state_dim + action_dim, 256)  # 输入为状态和动作的拼接
@@ -241,8 +219,7 @@ if __name__ == "__main__":
             x = F.relu(self.fc1(x))
             return self.fc2(x)
 
-
-    critic = Critic(state_dim,action_dim).to(device)
+    critic = Critic(state_dim, action_dim).to(device)
     critic_optim = torch.optim.Adam(critic.parameters(), lr=1e-3)
 
     # 初始化 DiffusionSAC 策略
@@ -277,21 +254,21 @@ if __name__ == "__main__":
         rew = np.random.randn()
         obs_next = np.random.randn(state_dim)
         done = np.random.rand() > 0.95
-        buffer.add(Batch(
-            obs=obs,
-            act=act,
-            rew=rew,
-            obs_next=obs_next,
-            done=done,  # 这里添加 'done' 属性，避免 'terminated' 错误
-            terminated=done,  # 如果有需要，也可以添加 'terminated' 属性
-            truncated=done,  # 如果有需要，也可以添加 'truncated' 属性
-        ))
+        buffer.add(
+            Batch(
+                obs=obs,
+                act=act,
+                rew=rew,
+                obs_next=obs_next,
+                done=done,  # 这里添加 'done' 属性，避免 'terminated' 错误
+                terminated=done,  # 如果有需要，也可以添加 'terminated' 属性
+                truncated=done,  # 如果有需要，也可以添加 'truncated' 属性
+            ))
 
     # 训练循环
     for epoch in range(10):  # 训练 1000 个 epoch
         # 从 ReplayBuffer 中采样
         batch, indices = buffer.sample(64)
-
 
         # 更新策略
         result = policy.update(sample_size=64, buffer=buffer)
