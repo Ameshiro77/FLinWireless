@@ -3,9 +3,9 @@ import os  # noqa
 
 current_dir = os.path.dirname(os.path.abspath(__file__))  # noqa
 sys.path.append(os.path.join(current_dir))  # noqa
-sys.path.append(os.path.join(current_dir, 'env'))  # noqa
-sys.path.append(os.path.join(current_dir, 'net'))  # noqa
-sys.path.append(os.path.join(current_dir, 'policy'))  # noqa
+sys.path.append(os.path.join(current_dir, "env"))  # noqa
+sys.path.append(os.path.join(current_dir, "net"))  # noqa
+sys.path.append(os.path.join(current_dir, "policy"))  # noqa
 
 import gym
 import torch
@@ -27,6 +27,7 @@ from net.model import *
 from net.diffusion import *
 from logger import InfoLogger
 
+
 def run(env, args):
     state, info = env.reset()
     print("env reset!\ninit state:", state)
@@ -42,8 +43,7 @@ def run(env, args):
     env.close()
 
 
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     args = get_args()
     dataset = FedDataset(args)
     model = MNISTResNet()
@@ -102,7 +102,9 @@ if __name__ == '__main__':
 
         def __init__(self, state_dim, action_dim):
             super(Critic, self).__init__()
-            self.fc1 = torch.nn.Linear(state_dim + action_dim, 256)  # 输入为状态和动作的拼接
+            self.fc1 = torch.nn.Linear(
+                state_dim + action_dim, 256
+            )  # 输入为状态和动作的拼接
             self.fc2 = torch.nn.Linear(256, 1)
 
         def forward(self, obs, act):
@@ -115,28 +117,30 @@ if __name__ == '__main__':
     critic_optim = torch.optim.Adam(critic.parameters(), lr=args.critic_lr)
 
     # === 初始化RL模型 ===
-    policy = DiffusionSAC(actor, actor_optim, 10, critic, critic_optim, args.device, TOTAL_BLOCKS)
-    PATH = args.algo + '_ckpt.pth'
+    policy = DiffusionSAC(
+        actor, actor_optim, 10, critic, critic_optim, args.device, TOTAL_BLOCKS
+    )
+    PATH = args.algo + "_ckpt.pth"
+
     def save_best_fn(model):
         torch.save(model.state_dict(), PATH)
-        
+
     if args.resume == True or args.evaluate == True:
-        print("model path:",PATH)
+        print("model path:", PATH)
         policy.load_state_dict(torch.load(PATH))
         print("model loaded!")
 
-    
     # tianshou 相关配置
     buffer = VectorReplayBuffer(64, 1)
     train_collector = Collector(policy, train_envs, buffer=buffer)
     test_collector = Collector(policy, test_envs, buffer=buffer)
 
-
     if not args.evaluate:
         from datetime import datetime
+
         now = datetime.now()
         timestamp = now.strftime("%Y%m%d_%H%M%S")
-        writer = SummaryWriter(f'logs/exp/{timestamp}')
+        writer = SummaryWriter(f"logs/exp/{timestamp}")
         logger = InfoLogger(writer)  # 创建基础日志记录器
         result = offpolicy_trainer(
             policy,
@@ -149,7 +153,7 @@ if __name__ == '__main__':
             batch_size=args.datas_per_update,
             update_per_step=args.update_per_step,
             logger=logger,
-            save_best_fn = save_best_fn
+            save_best_fn=save_best_fn,
         )
 
     np.random.seed(args.seed)
