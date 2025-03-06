@@ -3,16 +3,16 @@ import os  # noqa
 
 current_dir = os.path.dirname(os.path.abspath(__file__))  # noqa
 sys.path.append(os.path.join(current_dir))  # noqa
-sys.path.append(os.path.join(current_dir, 'env'))  # noqa
-sys.path.append(os.path.join(current_dir, 'net'))  # noqa
-sys.path.append(os.path.join(current_dir, 'policy'))  # noqa
+sys.path.append(os.path.join(current_dir, "env"))  # noqa
+sys.path.append(os.path.join(current_dir, "net"))  # noqa
+sys.path.append(os.path.join(current_dir, "policy"))  # noqa
 
 import gym
 import torch
 from gym import spaces
 from env.dataset import FedDataset
 from env.client import *
-from env.model import *
+from env.models import *
 from env.FedEnv import FederatedEnv, make_env
 import torch.nn.functional as F
 from policy import *
@@ -28,94 +28,118 @@ from net.model import *
 from net.diffusion import *
 from logger import InfoLogger
 
-# 设定一些参数
-state_dim = 4  # 对于 CartPole 环境，状态空间维度是 4
-action_dim = 2  # 对于 CartPole，动作空间维度是 2（左或右）
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-total_bandwidth = 100  # 带宽限制，根据需求调整
-top_k = 3  # 选择 K 个客户端
 
-# 定义 Actor 网络
-actor_net = MLP(state_dim=state_dim, action_dim=action_dim, hidden_dim=256)
-actor = Diffusion(state_dim=state_dim, action_dim=action_dim, model=actor_net, max_action=100).to(device)
-actor_optim = torch.optim.Adam(actor.parameters(), lr=1e-3)
-
-
-# 定义 Critic 网络
-class Critic(torch.nn.Module):
-
-    def __init__(self, state_dim, action_dim):
-        super(Critic, self).__init__()
-        self.fc1 = torch.nn.Linear(state_dim + action_dim, 256)
-        self.fc2 = torch.nn.Linear(256, 1)
-
-    def forward(self, obs, act:torch.tensor):
-        act = act.view(-1,1)
-        print(obs,act)
-        x = torch.cat([obs, act], dim=-1)
-        x = torch.relu(self.fc1(x))
-        return self.fc2(x)
+def run(env, args):
+    state, info = env.reset()
+    print("env reset!\ninit state:", state)
+    policy = RandomPolicy(env.action_space, args)
+    print("start training")
+    for _ in range(args.global_rounds):
+        action = policy.random_action()
+        next_state, reward, done, info = env.step(action)
+        print("\nnext_state:", next_state)
+        print("reward:", reward)
+        if done:
+            break
+    env.close()
 
 
-critic = Critic(state_dim, action_dim).to(device)
-critic_optim = torch.optim.Adam(critic.parameters(), lr=1e-3)
+if __name__ == "__main__":
 
-# 初始化 DiffusionSAC 策略
-policy = DiffusionSAC(actor=actor,
-                      actor_optim=actor_optim,
-                      action_dim=action_dim,
-                      critic=critic,
-                      critic_optim=critic_optim,
-                      device=device,
-                      total_bandwidth=total_bandwidth,
-                      alpha=0.2,
-                      tau=0.005,
-                      gamma=0.99,
-                      reward_normalization=False,
-                      estimation_step=1,
-                      lr_decay=True,
-                      lr_maxt=1000,
-                      pg_coef=0.5,
-                      top_k=top_k)
+    args = get_args()
+    dataset = FedDataset(args)
+    model = MNISTResNet()
+    optimizer_class = torch.optim.Adam
+    attr_dicts = init_attr_dicts(args.num_clients)
 
-# 创建 Gym 环境
-env = gym.make('CartPole-v1')
+    # == 初始化客户端数据集
+    clients = init_clients(args.num_clients, model, dataset, attr_dicts, args)
+    for i in range(args.num_clients):
+        subset = dataset.get_client_data(i)
+        clients[i].local_dataset = subset
+        print(f"Client {i} has {len(subset)} samples")
+    data_distribution = dataset.get_data_distribution()
+    print("Data distribution:")
+    for client_id, dist in data_distribution.items():
+        print(f"Client {client_id}: {dist},samples num:{sum(dist)}")
+    print("clients attr:")
+    for i in range(args.num_clients):
+        print(f"client {i} initialized,attr:{attr_dicts[i]}")
+    # ==
 
+    env, train_envs, test_envs = make_env(args, dataset, clients, model=model)
 
-# 创建 SubprocVecEnv 用于并行化训练
-def make_env():
-    env = gym.make('CartPole-v1')
-    train_envs = DummyVectorEnv([lambda: env for _ in range(1)])
-    test_envs = DummyVectorEnv([lambda: env for _ in range(1)])
-    return train_envs, test_envs
+    # run(env, args)
 
+    # ======================
+    # 使用tianshou进行训练
 
-train_envs, test_envs = make_env()  # 创建 4 个环境进行并行训练
+    # 计算 state_shape
+    state_dim = 0
 
-# 定义 ReplayBuffer
-buffer = VectorReplayBuffer(64, 1)
-train_collector = Collector(policy, train_envs, buffer=buffer)
-test_collector = Collector(policy, test_envs, buffer=buffer)
-# 设置日志记录器
-writer = SummaryWriter()
-logger = InfoLogger(writer)  # 创建基础日志记录器
+    if isinstance(env.observation_space, spaces.Dict):
+        for key, space in env.observation_space.spaces.items():
+            if isinstance(space, spaces.Discrete):
+                state_dim += 1  # Discrete 空间是标量
+            elif isinstance(space, spaces.Box):
+                state_dim += np.prod(space.shape)
+            else:
+                raise ValueError(f"Unsupported space type: {type(space)}")
+    else:
+        state_dim = env.observation_space.shape
 
-# 定义训练器
-result = offpolicy_trainer(policy,
-                           train_collector,
-                           test_collector,
-                           max_epoch=10,
-                           step_per_epoch=100,
-                           step_per_collect=10,
-                           episode_per_test=1,
-                           batch_size=10,
-                           update_per_step=1,
-                           logger=logger)
+    # state_dim = 4
+    action_dim = args.num_clients
+    print("state_dim:", state_dim, "action_dim:", action_dim)
+    # === 指定 actor 以及对应optim ===
 
-# 测试训练效果
-_,test_env = make_env()  # 创建测试环境
-test_collector = Collector(policy, test_env)
+    actor_net = MLP(state_dim=state_dim, action_dim=action_dim, hidden_dim=256,
+                    # activation='Relu'
+                    )
+    actor = Diffusion(
+        state_dim=state_dim,
+        action_dim=action_dim,
+        model=actor_net,
+        max_action=100,
+    ).to(args.device)
+    actor_optim = torch.optim.Adam(actor.parameters(), args.actor_lr)
 
-# 测试模型性能
-test_result = test_collector.collect(n_episode=10)
-print(f"Test Result: {test_result}")
+    # === 指定 critic 以及对应optim ===
+    critic = DoubleCritic(
+        state_dim=state_dim,
+        action_dim=action_dim,
+    ).to(args.device)
+    critic_optim = torch.optim.Adam(critic.parameters(), lr=args.critic_lr)
+
+    # === 初始化RL模型 ===
+    # policy = DiffusionSAC(actor,
+    #                       actor_optim,
+    #                       args.num_clients,
+    #                       critic,
+    #                       critic_optim,
+    #                       dist_fn=torch.distributions.Categorical,
+    #                       device=args.device,
+    #                       gamma=0.95,
+    #                       estimation_step=3,
+    #                       is_not_alloc=args.no_allocation,
+    #                       )
+    policy = DiffusionTD3(actor,
+                          actor_optim,
+                          critic=critic,
+                          critic_optim=torch.optim.Adam(critic.parameters(), lr=1e-3),
+                          device=args.device,
+                          tau=0.005,
+                          gamma=0.99,
+                          training_noise=0.1,
+                          policy_noise=0.2,
+                          noise_clip=0.5
+                          )
+    # train_envs = DummyVectorEnv([lambda: gym.make("CartPole-v1") for _ in range(1)])  # 10 个并行环境
+    # test_envs = DummyVectorEnv([lambda: gym.make("CartPole-v1") for _ in range(1)])  # 2 个并行环境
+    train_collector = Collector(policy, train_envs, VectorReplayBuffer(20000, 10), exploration_noise=True)
+    test_collector = Collector(policy, test_envs, exploration_noise=True)
+    for i in range(10):  # 训练总数
+        train_collector.collect(n_step=2)
+        print("===========")
+        # 使用采样出的数据组进行策略训练
+        losses = policy.update(1, train_collector.buffer)

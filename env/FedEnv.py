@@ -10,7 +10,7 @@ import gym
 from gym import spaces
 from dataset import FedDataset
 import torch.nn.functional as F
-from model import *
+from models import *
 from client import *
 
 
@@ -46,13 +46,15 @@ class FederatedEnv(gym.Env):
         self.latest_acc = 0
 
         self.clients_num = len(self.clients)
+        self.num_choose = args.num_choose
         self.parti_times = [0] * self.clients_num  # 参与次数
         self.name = '_'.join([name, f'wn{int(args.per_round_c_fraction * self.clients_num)}', f'tn{len(self.clients)}'])
         self.latest_global_model = self.get_model_parameters()
         self.current_round = 0
         self.data_sizes = [len(client.local_dataset) for client in self.clients]
         self.gains = [client.attr_dict['gain'] for client in self.clients]
-
+        self.max_T, self.min_T, self.max_E, self.min_E = self.get_boundary_cost()
+        self.all_time = self.all_energy = 0  # 所有轮次总开销。
         # STATE ACTION 的SPACE
         self.action_space = spaces.Box(low=0, high=1, shape=(self.clients_num, ), dtype=np.float32)
         self.observation_space = spaces.Dict({
@@ -78,6 +80,39 @@ class FederatedEnv(gym.Env):
     def set_model_parameters(self, model_parameters_dict):
         self.model.load_state_dict(model_parameters_dict)
 
+    # get min-max T&E
+    def get_boundary_cost(self):
+        min_rb_lst = []
+        max_rb_lst = []
+        for client in self.clients:  # 得到最大/小rate时的rb。（实验结果递增）
+            min_rate = max_rate = 0
+            min_rb = max_rb = 1
+            for i in range(TOTAL_BLOCKS):
+                client.set_rb_num(i + 1)
+                rate = client.get_transmission_rate()
+                if rate > max_rate:
+                    max_rb = i + 1
+                if rate < min_rate:
+                    min_rb = i + 1
+            min_rb_lst.append(min_rb)
+            max_rb_lst.append(max_rb)
+        # print(min_rb_lst, max_rb_lst)
+        # 算max min T
+        max_T, min_T, max_E, min_E = 0, 0, 0, 0
+        for client in self.clients:  # 得到最大/小rate时的rb。（实验结果递增）
+            client.set_rb_num(max_rb)  # T min (rate max)
+        all_T, all_E = zip(*[client.get_cost() for client in self.clients])
+        min_T, min_E = min(all_T), min(all_E)
+        # print(all_T,min_T,all_E,min_E)
+
+        for client in self.clients:
+            client.set_rb_num(min_rb)  # T max
+        all_T, all_E = zip(*[client.get_cost() for client in self.clients])
+        max_T, max_E = max(all_T), max(all_E)  # min_E最小，但max_E是近似的。即便如此，rew的惩罚项也足够高。
+        # print(all_T,max_T,all_E,max_E)
+        print(f"max_T:{max_T}, min_T:{min_T}, max_E:{max_E}, min_E:{min_E}")
+        return max_T, min_T, max_E, min_E
+
     # 需要返回初始state和info。
     def reset(self, seed=42, options=None):
         # 重置模型
@@ -101,6 +136,8 @@ class FederatedEnv(gym.Env):
             'energys': blank,
             'current_round': self.current_round
         }
+        # observasion = {'key':[1,0,2,1]}
+        # print(observasion)
         observasion = self.dict_to_vector(observasion)
         return observasion, info
 
@@ -145,7 +182,9 @@ class FederatedEnv(gym.Env):
         self.current_round += 1
 
         # == 设计奖励 & 返回值 ==
-        del_acc = stats_from_test_data['acc'] - self.latest_acc
+        time_rew = (total_time - self.min_T) / (self.max_T - self.min_T) * 100  # min-max normalize
+        energy_rew = (total_energy - self.min_E) / (self.max_E - self.min_E) * 100
+        del_acc = global_acc - self.latest_acc
         original_del = del_acc
         if self.current_round == 1:  # 0.50~70->10
             del_acc = del_acc * 20
@@ -153,15 +192,18 @@ class FederatedEnv(gym.Env):
             del_acc = del_acc * 100
         else:
             del_acc = del_acc * 500
-        self.latest_acc = stats_from_test_data['acc']
-        reward = (args.rew_alpha * del_acc * 1.5 - args.rew_beta * total_time - args.rew_gamma * total_energy * 2) * 10
-        print(f"reward: {reward} del_acc: {original_del} total_time: {total_time} total_energy: {total_energy}")
+        self.latest_acc = global_acc
+        reward = (args.rew_alpha * del_acc * 1.6 - args.rew_beta * time_rew - args.rew_gamma * energy_rew)
+        print(
+            f"reward: {reward} del_acc: {original_del} total_time: {total_time} total_energy: {total_energy} reward T&E: {time_rew}, {energy_rew}\
+              \nglobal acc: {global_acc} rew_T&rew_E: {time_rew},{energy_rew} rew_acc: {del_acc} abc:{args.rew_alpha},{args.rew_beta},{args.rew_gamma}")
 
         # log
         if self.is_log == True:
             self.log(f"=====\n{self.current_round} / {self.global_rounds} round")
             self.log("action: " + str(action))
             self.log(f"total T AND E:{total_time}, {total_energy}")
+            self.log(f"reward T AND E:{time_rew}, {energy_rew}")
             for idx, stat in enumerate(stats):
                 loss, acc, t, e = stat['loss'], stat['accuracy'], stat['time'], stat['energy']
                 self.log(f"Client {indices[idx]} loss:{loss} accuracy:{acc} time:{t} energy:{e}")
@@ -173,9 +215,9 @@ class FederatedEnv(gym.Env):
         # 数据标签程度数据集大小 历史参与次数 信道增益; 各时间，能耗；当前时间步 等等...
         # 根据oort：如果loss越大，那么就越值得被选用。
         # not been converted to tensor
-        losses = self.restore_array(self.clients_num, indices, [stat['loss'] for stat in stats])
-        times = self.restore_array(self.clients_num, indices, [stat['time'] for stat in stats])
-        energys = self.restore_array(self.clients_num, indices, [stat['energy'] for stat in stats])
+        losses = self.restore_array(self.clients_num, indices, [stat['loss'] for stat in stats], is_norm=True)
+        times = self.restore_array(self.clients_num, indices, [stat['time'] for stat in stats], is_norm=True)
+        energys = self.restore_array(self.clients_num, indices, [stat['energy'] for stat in stats], is_norm=True)
         observasion = {
             'losses': losses,
             'data_sizes': self.data_sizes,
@@ -185,14 +227,21 @@ class FederatedEnv(gym.Env):
             'energys': energys,
             'current_round': self.current_round
         }
+        # observasion = {'key':[1,0,2,1]}
+        # print(observasion)
         observasion = self.dict_to_vector(observasion)
+
         done = self.current_round >= self.global_rounds
+        self.all_time += total_time
+        self.all_energy += total_energy
         info = {
             'current_round': self.current_round,
             'global_loss': global_loss,
             'global_accuracy': global_acc,
             'total_time': total_time,
             'total_energy': total_energy,
+            'env_all_time': self.all_time,
+            'env_all_energy': self.all_energy,
         }
         return observasion, reward, done, done, info  # 新gym返回五个值。
 
@@ -260,9 +309,21 @@ class FederatedEnv(gym.Env):
         vector = []
         for key, value in observation.items():
             if isinstance(value, (int, float)):
+                # 单个值直接加入
                 vector.append(value)
             elif isinstance(value, (list, np.ndarray)):
-                vector.extend(value)
+                # 对列表或数组进行标准化
+                value = np.array(value, dtype=np.float32)
+                if len(value) > 0:  # 确保列表不为空
+                    value_mean = np.mean(value)
+                    value_std = np.std(value)
+                    if value_std != 0:  # 防止除以零
+                        value_normalized = (value - value_mean) / value_std
+                    else:
+                        value_normalized = value  # 如果标准差为零，标准化后仍为原值
+                    vector.extend(value_normalized)
+                else:
+                    vector.extend(value)  # 空列表直接加入
         return np.array(vector, dtype=np.float32)
 
 

@@ -8,7 +8,7 @@ import numpy as np
 from tqdm import tqdm
 from dataset import FedDataset
 from config import *
-from model import resnet18
+from models import resnet18
 
 criterion = F.cross_entropy
 mse_loss = nn.MSELoss()
@@ -113,7 +113,7 @@ class Client():
         N0 = 10**(-16)
         n = self.rb_num
 
-        return (n * B) * np.log2(1 + (p * h * (d**-alpha)) / (N0 * n))
+        return (n * B) * np.log2(1 + (p * h * (d**-alpha)) / (N0 * n * B + 1e-6)) #avoid /0
 
     def get_communication_time(self):
         R_k = self.get_transmission_rate()
@@ -160,7 +160,6 @@ def init_clients(clients_num, model, dataset, attr_dicts, args):
         # 为每个客户端创建独立的模型和优化器副本
         client_model = copy.deepcopy(model)
         clients.append(Client(i, dataset, client_model, attr_dicts[i], args))
-
     return clients
 
 
