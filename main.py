@@ -13,7 +13,7 @@ from gym import spaces
 import torch.nn.functional as F
 import argparse
 from tianshou.policy import DQNPolicy
-from tianshou.trainer import onpolicy_trainer, offpolicy_trainer
+from tianshou.trainer import onpolicy_trainer, offpolicy_trainer, OffpolicyTrainer
 from tianshou.data import Collector, VectorReplayBuffer
 from torch.utils.tensorboard import SummaryWriter
 from tianshou.utils import BasicLogger
@@ -55,10 +55,13 @@ if __name__ == "__main__":
         now = datetime.now()
         timestamp = now.strftime("%Y%m%d_%H%M%S")
         exp_dir = f"exp/{timestamp}"
-        exp_dir = (
-            exp_dir
-            + f"_dataset_{args.dataset}_epochs_{args.epochs}_rewa_{args.rew_alpha}_rewb_{args.rew_beta}_rewc_{args.rew_gamma}_noalloc_{args.no_allocation}_algo_{args.algo}"
-        )
+        os.makedirs(exp_dir, exist_ok=True)
+        with open(f"{exp_dir}/config.txt", "w") as f:
+            config_des = f"dataset_{args.dataset}_epochs_{args.epochs}_algo_{args.algo}_dbranch_{args.dbranch}"
+            f.write(f"{config_des}\n")
+            f.write('args:\n')
+            for k, v in vars(args).items():
+                f.write(f"{k}: {v}\n")
 
     PATH = os.path.join(exp_dir, args.algo + "_ckpt.pth")
 
@@ -77,16 +80,25 @@ if __name__ == "__main__":
 
     # === 训练 ===
     if not args.evaluate:
-        from datetime import datetime
-
-        now = datetime.now()
-        timestamp = now.strftime("%Y%m%d_%H%M%S")
         if not args.no_logger:
             writer = SummaryWriter(exp_dir)
             logger = BasicLogger(writer)  # 创建基础日志记录器
         else:
             logger = None
-        result = offpolicy_trainer(
+        # result = offpolicy_trainer(
+        #     policy,
+        #     train_collector,
+        #     test_collector,
+        #     max_epoch=args.epochs,
+        #     step_per_epoch=args.global_rounds,
+        #     step_per_collect=args.global_rounds,
+        #     episode_per_test=args.test_num,
+        #     batch_size=args.datas_per_update,
+        #     update_per_step=args.update_per_step,
+        #     logger=logger,
+        #     save_best_fn=save_best_fn,
+        # )
+        trainer = OffpolicyTrainer(
             policy,
             train_collector,
             test_collector,
@@ -99,13 +111,43 @@ if __name__ == "__main__":
             logger=logger,
             save_best_fn=save_best_fn,
         )
+        print("start!!!!!!!!!!!!!!!")
+        for epoch, epoch_stat, info in trainer:
+            print("=======\nEpoch:", epoch)
+            print(epoch_stat)
+            print(info)
+            logger.write('epochs/stat', epoch, epoch_stat)
 
     # === eval ===
     print("======== evaluate =======")
     np.random.seed(args.seed)
-    env, _, test_env = make_env(args, dataset, clients, model=model)
     policy.eval()
-    collector = Collector(policy, test_env)
-    result = collector.collect(n_episode=1)
-    rews, lens = result["rews"], result["lens"]
-    print(f"Final reward: {rews.mean()}, length: {lens.mean()}")
+    obs, info = env.reset()  # 重置环境，返回初始观测值
+    result_dict = {
+        'current_round': [],
+        'global_loss': [],
+        'global_accuracy': [],
+        'total_time': [],
+        'total_energy': [],
+        'env_all_time': [],
+        'env_all_energy': [],
+    }
+
+    from tianshou.data import Batch
+    import json
+    # from tianshou.policy
+    done = False
+    while not done:
+        batch = Batch(obs=[obs])  # 第一维是 batch size
+        act = policy(batch).act[0].cpu().detach().numpy()  # policy.forward 返回一个 batch，使用 ".act" 来取出里面action的数据
+        obs, rew, done, done, info = env.step(act)
+        for key, value in info.items():
+            result_dict[key].append(value)
+        if done:
+            break
+        env.close()
+
+    print(result_dict)
+    # res_dir = f"result/{timestamp}"
+    with open(f"{exp_dir}/result.json", "w") as f:
+        json.dump(result_dict, f, indent=4)

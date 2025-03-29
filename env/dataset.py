@@ -8,12 +8,11 @@ from torch.utils.data import DataLoader, Dataset, Subset
 
 from config import get_args
 
+
 """
 管理联邦学习过程的数据集分配。
 """
-
-
-class FedDataset(Dataset):
+class  FedDataset(Dataset):
     # 构建不需要client类，但是需要知道num
     def __init__(self, args):
 
@@ -23,7 +22,7 @@ class FedDataset(Dataset):
 
         self.dataset_name = args.dataset
         self.num_clients = args.num_clients  # 客户端数量。根据id分配。
-        self.alpha = args.alpha
+        self.alpha = args.alpha #noniid分布因子
         self.batch_size = args.batch_size
         self.data_dir = args.data_dir
         self.non_iid = args.non_iid
@@ -136,13 +135,11 @@ class FedDataset(Dataset):
             indices) for client_id, indices in self.client_data_indices.items()}
         return client_sizes
     
-    # 重写dataset用的
+
     def __len__(self):
-        # 返回数据集的长度
         return len(self.train_data)
 
     def __getitem__(self, index):
-        # 返回指定索引的数据和标签
         return self.train_data[index]
 
 

@@ -170,10 +170,9 @@ def init_attr_dicts(client_num):
     gain = np.random.normal(GAIN_MEAN, GAIN_STD, client_num)
     distance = np.random.normal(DISTANCE_MEAN, DISTANCE_STD, client_num)
 
-    cpu_frequency = np.clip(cpu_frequency, 1e9, 3e9)
-    transmit_power = np.clip(transmit_power, 1e-3, 10e-3)
-    gain = np.clip(gain, 1e-9, 1e-7)
-    distance = np.clip(distance, 1, 10)
+    cpu_frequency = np.clip(cpu_frequency, 1.5e9, 2.5e9)
+    transmit_power = np.clip(transmit_power, 0.4, 0.6)
+    gain = np.clip(gain, 4e-8, 6e-8)
 
     attr = Attribute(cpu_frequency, transmit_power, gain, distance)
     return [attr.get_attr(i) for i in range(client_num)]

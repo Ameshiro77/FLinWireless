@@ -36,6 +36,7 @@ class DiffusionSAC(BasePolicy):
             total_bandwidth: int = 100,
             num_choose: int = 5,
             is_not_alloc=False,
+            task='fed',
             **kwargs: Any
     ) -> None:
         super().__init__(**kwargs)
@@ -74,6 +75,7 @@ class DiffusionSAC(BasePolicy):
         self._total_bandwidth = total_bandwidth
         self._num_choose = num_choose
         self._is_not_alloc = is_not_alloc
+        self._task = task
 
     def _target_q(self, buffer: ReplayBuffer, indices: np.ndarray) -> torch.Tensor:
         batch = buffer[indices]
@@ -99,6 +101,7 @@ class DiffusionSAC(BasePolicy):
         self.updating = True
         # sample from replay buffer
         batch, indices = buffer.sample(sample_size)
+        # exit()
         # calculate n_step returns
         batch = self.process_fn(batch, buffer, indices)
         # update network parameters
@@ -109,21 +112,19 @@ class DiffusionSAC(BasePolicy):
         self.updating = False
         return result
 
-    def forward(self, batch: Batch, input: str = "obs", model: str = "actor") -> Batch:
+    def forward(self, batch: Batch, input: str = "obs", model: str = "actor", exploration_fn=None) -> Batch:
         if input == None:
             input = "obs"
         obs_ = to_torch(batch[input], device=self._device, dtype=torch.float32)
         model_ = self._actor if model == "actor" else self._target_actor
-        logits, hidden = model_(obs_), None  # logits:bs,act_dim
-        dist = self._dist_fn(logits)
-        selects, allocs = self.allocate_bandwidth(logits)
-        if self._is_not_alloc:
-            topk_values, topk_indices = torch.topk(logits, self._num_choose, dim=1)
-            selection = torch.zeros_like(logits, dtype=torch.int32)
-            selection.scatter_(1, topk_indices, 1)
-            return Batch(logits=logits, act=selection, state=hidden, dist=dist)
+        probs, allocs, acts = model_(obs_)  # logits:bs,act_dim
+        dist = self._dist_fn(acts)
+        if self._task == 'gym':
+            return Batch(logits=acts, act=acts, state=None, dist=dist, probs=probs, allocs=allocs)
+        elif self._task == 'fed':
+            return Batch(logits=acts, act=acts, state=None, dist=dist, probs=probs, allocs=allocs)
         else:
-            return Batch(logits=logits, act=allocs, state=hidden, dist=dist)
+            raise NotImplementedError
 
     def _to_one_hot(self, data: np.ndarray, one_hot_dim: int) -> np.ndarray:
         batch_size = data.shape[0]
@@ -134,7 +135,7 @@ class DiffusionSAC(BasePolicy):
 
     def _update_critic(self, batch: Batch) -> torch.Tensor:
         obs = to_torch(batch.obs, device=self._device, dtype=torch.float32)
-        acts = to_torch(batch.act[:, np.newaxis], device=self._device, dtype=torch.long)  # [ [[0 1 -1 0.. ]] ]
+        acts = to_torch(batch.act, device=self._device, dtype=torch.long)
         target_q = batch.returns
 
         current_q1, current_q2 = self._critic(obs, acts)
@@ -158,7 +159,6 @@ class DiffusionSAC(BasePolicy):
     def _update_policy(self, batch: Batch, update: bool = False) -> torch.Tensor:
         obs_ = to_torch(batch.obs, device=self._device, dtype=torch.float32)
         act_ = to_torch(batch.act, device=self._device, dtype=torch.float32)
-        act_ = torch.randint(0, 1, (obs_.shape[0], 10), dtype=torch.int32, device=obs_.device)
         dist = self.forward(batch).dist
         entropy = dist.entropy()
         with torch.no_grad():
@@ -175,22 +175,26 @@ class DiffusionSAC(BasePolicy):
         self.soft_update(self._target_actor, self._actor, self._tau)
         self.soft_update(self._target_critic, self._critic, self._tau)
 
-    def learn(
-            self,
-            batch: Batch,
-            **kwargs: Any
-    ) -> Dict[str, List[float]]:
+    def learn(self, batch: Batch, **kwargs: Any) -> Dict[str, List[float]]:
         # update critic network
         critic_loss = self._update_critic(batch)
         # update actor network
         pg_loss = self._update_policy(batch, update=False)
         bc_loss = self._update_bc(batch, update=False) if self._pg_coef < 1. else 0.
-        overall_loss = self._pg_coef * pg_loss + (1 - self._pg_coef) * bc_loss
+        # overall_loss = self._pg_coef * pg_loss + (1 - self._pg_coef) * bc_loss
+        # self._actor_optim.zero_grad()
+        # overall_loss.backward()
+        # print(overall_loss)
+        # ==
+        total_loss, loss_dict = self._actor.compute_loss(pg_loss)
         self._actor_optim.zero_grad()
-        overall_loss.backward()
-        print(overall_loss)
+        total_loss.backward()
+        self._actor_optim.step()
+        
+
+        # print(overall_loss)
         for name, param in self._actor.named_parameters():
-            print(f"✅ Gradient exists for {name}, mean grad: {param.grad.mean()}")
+            print(f"✅ Gradient exists for {name}, mean grad: {param.grad.mean()}!")
         self._actor_optim.step()
         # update target networks
         self._update_targets()
@@ -199,129 +203,3 @@ class DiffusionSAC(BasePolicy):
             'overall_loss': overall_loss.item(),
             'rew': batch.rew
         }
-
-    def allocate_bandwidth(self, probs):
-        """实现带宽分配算法：先选 top_n，再线性归一化分配带宽"""
-        batch_size, n_clients = probs.shape  # probs 的形状为 (batch_size, n_clients)
-        allocations = []
-        selects = []
-        device = probs.device  # 获取 probs 所在的设备
-
-        for b in range(batch_size):
-            prob = probs[b]  # 当前批次的概率分布
-
-            # 1. 根据概率选择前 top_n 个客户端
-            sorted_indices = torch.argsort(prob, descending=True)
-            selected_indices = sorted_indices[:self._num_choose]
-
-            # 2. 对选定客户端的概率进行线性归一化
-            selected_probs = prob[selected_indices]
-            normalized_probs = selected_probs / selected_probs.sum()
-
-            # 3. 按比例分配带宽
-            initial_alloc = torch.floor(normalized_probs * self._total_bandwidth).int()
-            remaining = self._total_bandwidth - initial_alloc.sum()
-
-            # 4. 剩余带宽按概率大小分配
-            for i in range(remaining):
-                initial_alloc[i % self._num_choose] += 1
-
-            # 5. 构造当前批次的分配
-            alloc = torch.zeros(n_clients, dtype=torch.int, device=device)
-            alloc[selected_indices] = initial_alloc
-            allocations.append(alloc)
-            selects.append(selected_indices)
-        return torch.stack(selects), torch.stack(allocations)
-
-
-if __name__ == "__main__":
-    import sys  # noqa
-    import os  # noqa
-
-    current_dir = os.path.abspath(__file__)  # noqa
-    project_root = os.path.dirname(os.path.dirname(current_dir))  # noqa
-    sys.path.append(os.path.join(project_root, 'net'))  # noqa
-    sys.path.append(os.path.join(project_root, 'env'))  # noqa
-    sys.path.append(project_root)
-
-    # 现在可以正常导入 net.diffusion
-    from env.dataset import FedDataset
-    from env.client import get_args, init_attr_dicts, init_clients
-    from env.models import MNISTResNet
-    from env.FedEnv import FederatedEnv, make_env
-    from net.diffusion import Diffusion
-    from net.model import *
-
-    # === 初始化环境 ===
-    args = get_args()
-    dataset = FedDataset(args)
-    model = MNISTResNet()
-    attr_dicts = init_attr_dicts(args.num_clients)
-    clients = init_clients(args.num_clients, model, dataset, attr_dicts, args)
-    for i in range(args.num_clients):
-        subset = dataset.get_client_data(i)
-        clients[i].local_dataset = subset
-        print(f"Client {i} has {len(subset)} samples")
-    data_distribution = dataset.get_data_distribution()
-    print("Data distribution:")
-    for client_id, dist in data_distribution.items():
-        print(f"Client {client_id}: {dist},samples num:{sum(dist)}")
-    print("clients attr:")
-    for i in range(args.num_clients):
-        print(f"client {i} initialized,attr:{attr_dicts[i]}")
-
-    env, train_envs, test_envs = make_env(args, dataset, clients, model=model)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    # === 指定 actor 以及对应optim ===
-    # 计算 state_shape
-    state_dim = 0
-    for key, space in env.observation_space.spaces.items():
-        if isinstance(space, spaces.Discrete):
-            state_dim += 1  # Discrete 空间是标量
-        elif isinstance(space, spaces.Box):
-            state_dim += np.prod(space.shape)
-        else:
-            raise ValueError(f"Unsupported space type: {type(space)}")
-    action_dim = 10
-    actor_net = MLP(state_dim=state_dim, action_dim=action_dim, hidden_dim=256)
-    actor = Diffusion(
-        state_dim=state_dim,
-        action_dim=action_dim,
-        model=actor_net,
-        max_action=100,
-    ).to(args.device)
-    actor_optim = torch.optim.Adam(actor.parameters(), args.actor_lr)
-
-    # === 指定 critic 以及对应optim ===
-    critic = DoubleCritic(
-        state_dim=state_dim,
-        action_dim=action_dim,
-    ).to(args.device)
-    critic_optim = torch.optim.Adam(critic.parameters(), lr=args.critic_lr)
-
-    # === 初始化 DiffusionSAC 策略 ===
-    policy = DiffusionSAC(
-        actor=actor,
-        actor_optim=actor_optim,
-        action_dim=action_dim,
-        critic=critic,
-        critic_optim=critic_optim,
-        dist_fn=torch.distributions.Categorical,
-        device=device,
-        alpha=0.2,
-        tau=0.005,
-        gamma=0.99,
-        reward_normalization=False,
-        estimation_step=1,
-        lr_decay=True,
-        lr_maxt=1000,
-        pg_coef=0.5,
-    )
-
-    train_collector = Collector(policy, train_envs, VectorReplayBuffer(20000, 10), exploration_noise=True)
-    test_collector = Collector(policy, test_envs, exploration_noise=True)
-    for i in range(10):  # 训练总数
-        train_collector.collect(n_step=2)
-        # 使用采样出的数据组进行策略训练
-        losses = policy.update(2, train_collector.buffer)

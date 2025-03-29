@@ -133,6 +133,7 @@ class Diffusion(nn.Module):
         if t_step_res:
             return F.softmax(action, dim=-1), F.softmax(t_step_res, dim=-1)
         else:
+            return action
             return F.softmax(action, dim=-1)
 
     def q_sample(self, x_start, t, noise=None):

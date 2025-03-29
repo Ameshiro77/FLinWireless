@@ -1,0 +1,46 @@
+dataset_MNIST_epochs_80_rewa_0.2_rewb_0.6_rewc_0.5_algo_diff_td3_dbranch_True
+args:
+gpu: True
+device: cuda:0
+task: fed
+dataset: MNIST
+num_clients: 10
+num_choose: 5
+alpha: 0.5
+batch_size: 32
+data_dir: ./data
+non_iid: True
+seed: 42
+log_fed: False
+log_client: False
+local_rounds: 1
+global_rounds: 10
+per_round_c_fraction: 0.1
+cycles_per_sample: 100000.0
+fed_lr: 0.01
+fed_optim: adam
+return_coef: 0.999
+rew_alpha: 0.2
+rew_beta: 0.6
+rew_gamma: 0.5
+penalty_coef: 2.5
+no_allocation: False
+top_k: 0
+algo: diff_td3
+dbranch: True
+threshold: 0.8
+lambda_1: 1.0
+lambda_2: 1.0
+no_logger: False
+epochs: 80
+actor_lr: 0.001
+critic_lr: 0.001
+step_per_collect: 10
+training_num: 1
+test_num: 1
+datas_per_update: 16
+update_per_step: 1
+resume: False
+evaluate: False
+ckpt_dir: ./exp
+remark: 
