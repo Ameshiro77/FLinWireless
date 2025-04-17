@@ -13,7 +13,7 @@ from gym import spaces
 import torch.nn.functional as F
 import argparse
 from tianshou.policy import DQNPolicy
-from tianshou.trainer import onpolicy_trainer, offpolicy_trainer, OffpolicyTrainer
+from tianshou.trainer import onpolicy_trainer, offpolicy_trainer, OffpolicyTrainer, OnpolicyTrainer
 from tianshou.data import Collector, VectorReplayBuffer
 from torch.utils.tensorboard import SummaryWriter
 from tianshou.utils import BasicLogger
@@ -39,7 +39,7 @@ if __name__ == "__main__":
         else:
             raise ValueError(f"Unsupported space type: {type(space)}")
     action_dim = args.num_clients
-
+    state_dim = 70
     # === 指定 actor 以及对应optim ===
     actor, critic = choose_actor_critic(state_dim, action_dim, args)
     actor_optim = torch.optim.Adam(actor.parameters(), args.actor_lr)
@@ -55,13 +55,14 @@ if __name__ == "__main__":
         now = datetime.now()
         timestamp = now.strftime("%Y%m%d_%H%M%S")
         exp_dir = f"exp/{timestamp}"
-        os.makedirs(exp_dir, exist_ok=True)
-        with open(f"{exp_dir}/config.txt", "w") as f:
-            config_des = f"dataset_{args.dataset}_epochs_{args.epochs}_algo_{args.algo}_dbranch_{args.dbranch}"
-            f.write(f"{config_des}\n")
-            f.write('args:\n')
-            for k, v in vars(args).items():
-                f.write(f"{k}: {v}\n")
+        if not args.no_logger:
+            os.makedirs(exp_dir, exist_ok=True)
+            with open(f"{exp_dir}/config.txt", "w") as f:
+                config_des = f"dataset_{args.dataset}_epochs_{args.epochs}_algo_{args.algo}_dbranch_{args.dbranch}"
+                f.write(f"{config_des}\n")
+                f.write('args:\n')
+                for k, v in vars(args).items():
+                    f.write(f"{k}: {v}\n")
 
     PATH = os.path.join(exp_dir, args.algo + "_ckpt.pth")
 
@@ -85,7 +86,21 @@ if __name__ == "__main__":
             logger = BasicLogger(writer)  # 创建基础日志记录器
         else:
             logger = None
-        # result = offpolicy_trainer(
+
+        trainer = OnpolicyTrainer(
+            policy,
+            train_collector,
+            test_collector,
+            max_epoch=args.epochs,
+            repeat_per_collect=2,  # diff with offpolicy_trainer
+            step_per_epoch=args.epochs,
+            step_per_collect=args.step_per_collect,
+            episode_per_test=args.test_num,
+            batch_size=16,
+            logger=logger,
+            save_best_fn=save_best_fn,
+        )
+        # trainer = OffpolicyTrainer(
         #     policy,
         #     train_collector,
         #     test_collector,
@@ -98,19 +113,7 @@ if __name__ == "__main__":
         #     logger=logger,
         #     save_best_fn=save_best_fn,
         # )
-        trainer = OffpolicyTrainer(
-            policy,
-            train_collector,
-            test_collector,
-            max_epoch=args.epochs,
-            step_per_epoch=args.global_rounds,
-            step_per_collect=args.global_rounds,
-            episode_per_test=args.test_num,
-            batch_size=args.datas_per_update,
-            update_per_step=args.update_per_step,
-            logger=logger,
-            save_best_fn=save_best_fn,
-        )
+        
         print("start!!!!!!!!!!!!!!!")
         for epoch, epoch_stat, info in trainer:
             print("=======\nEpoch:", epoch)
@@ -139,13 +142,15 @@ if __name__ == "__main__":
     done = False
     while not done:
         batch = Batch(obs=[obs])  # 第一维是 batch size
-        act = policy(batch).act[0].cpu().detach().numpy()  # policy.forward 返回一个 batch，使用 ".act" 来取出里面action的数据
+        act = policy(batch).act[0]
+        if isinstance(act, torch.Tensor):
+            act = act.cpu().detach().numpy()  # policy.forward 返回一个 batch，使用 ".act" 来取出里面action的数据
         obs, rew, done, done, info = env.step(act)
         for key, value in info.items():
             result_dict[key].append(value)
         if done:
             break
-        env.close()
+    env.close()
 
     print(result_dict)
     # res_dir = f"result/{timestamp}"

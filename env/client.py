@@ -67,36 +67,41 @@ class Client():
     def set_model_parameters(self, model_parameters_dict):
         self.model.load_state_dict(model_parameters_dict)
 
-    def local_train(self):
-
+    def local_train(self, is_need_train=True):
         localTrainDataLoader = DataLoader(self.local_dataset, batch_size=self.args.batch_size, shuffle=True)
         self.model.cuda().train()
         train_loss = train_acc = train_total = 0
+        mean_loss = acc = 0
         if self.args.log_client:
             print(f"client {self.id} training")
-        for epoch in tqdm(range(self.args.local_rounds), desc="Epoch", disable=not self.args.log_client):
-            for X, y in localTrainDataLoader:
-                if torch.cuda.is_available():
-                    X, y = X.cuda(), y.cuda()
-                pred = self.model(X)
-                loss = criterion(pred, y)
-                self.optimizer.zero_grad()
-                loss.backward()
-                self.optimizer.step()
+        # 如果RL奖励函数与损失、精度无关；且状态不包括loss，则不需要训练，只需要返回t和e
+        # 但是测试的时候必须训练以获取精度。
+        if is_need_train:
+            for epoch in tqdm(range(self.args.local_rounds), desc="Epoch", disable=not self.args.log_client):
+                for X, y in localTrainDataLoader:
+                    if torch.cuda.is_available():
+                        X, y = X.cuda(), y.cuda()
+                    pred = self.model(X)
+                    loss = criterion(pred, y)
+                    self.optimizer.zero_grad()
+                    loss.backward()
+                    self.optimizer.step()
 
-                _, predicted = torch.max(pred, 1)
-                correct = predicted.eq(y).sum().item()
-                train_loss += loss.item() * y.size(0)
-                train_acc += correct
-                train_total += y.size(0)
-
+                    _, predicted = torch.max(pred, 1)
+                    correct = predicted.eq(y).sum().item()
+                    train_loss += loss.item() * y.size(0)
+                    train_acc += correct
+                    train_total += y.size(0)
+            mean_loss = train_loss / train_total
+            acc =  train_acc / train_total
+            
         local_model_paras = self.get_model_parameters()
         time, energy = self.get_cost()
         if self.args.log_client:
             print(f"loss: {train_loss / train_total}  time: {time}  energy: {energy}")
         return local_model_paras, {
-            "loss": train_loss / train_total,
-            "accuracy": train_acc / train_total,
+            "loss": mean_loss,
+            "accuracy": acc,
             "time": time,
             "energy": energy
         }
@@ -112,8 +117,9 @@ class Client():
         alpha = -2
         N0 = 10**(-16)
         n = self.rb_num
+        rate = (n * B) * np.log2(1 + (p * h * (d**-alpha)) / (N0 * n * B + 1e-6)) #avoid / 0
 
-        return (n * B) * np.log2(1 + (p * h * (d**-alpha)) / (N0 * n * B + 1e-6)) #avoid /0
+        return rate
 
     def get_communication_time(self):
         R_k = self.get_transmission_rate()
@@ -150,6 +156,13 @@ class Client():
         T = cmp_t + com_t
         E = cmp_e + com_e
         return T, E
+    
+    def update_state(self):
+        self.update_gain()
+        # more to add .
+        
+    def update_gain(self):
+        self.attr_dict['gain'] = np.random.normal(GAIN_MEAN, GAIN_STD)
 
 
 # 初始化客户端,根据一个同长度的属性列表

@@ -13,7 +13,7 @@ import numpy as np
 from tianshou.data import Batch, to_torch_as
 
 
-class TD3BCPolicy(BasePolicy):
+class DDPGPolicy(BasePolicy):
     """
     refer to tianshou api
     """
@@ -76,11 +76,7 @@ class TD3BCPolicy(BasePolicy):
         batch = buffer[indices]
         act_next = self.forward(batch, model="target_actor", input="obs_next").act
         obs_next = torch.FloatTensor(batch.obs_next).to(self.device)
-        noise = torch.randn(size=act_next.shape, device=act_next.device) * self.policy_noise
-        if self.noise_clip > 0.0:
-            noise = noise.clamp(-self.noise_clip, self.noise_clip)
-        act_next += noise
-        target_q = self.target_critic.q_min(obs_next, act_next)
+        target_q = self.target_critic(obs_next, act_next)
         return target_q
 
     #   === update logic ===
@@ -92,10 +88,11 @@ class TD3BCPolicy(BasePolicy):
         weight = getattr(batch, "weight", 1.0)
         obs = to_torch(batch.obs, device=self.device, dtype=torch.float32)
         act = to_torch(batch.act, device=self.device, dtype=torch.long)
-        current_q1 = self.critic.q1_net(obs, act)
-        current_q1 = current_q1.flatten()
+    
+        current_q = self.critic(obs, act)
+        current_q = current_q.flatten()
         target_q = batch.returns.flatten()
-        td1 = current_q1 - target_q
+        td1 = current_q - target_q
         # critic_loss = F.mse_loss(current_q1, target_q)
         q1_loss = (td1.pow(2) * weight).mean()
         self.critic_optim.zero_grad()
@@ -110,10 +107,12 @@ class TD3BCPolicy(BasePolicy):
 
         # actor
         obs = to_torch(batch.obs, device=self.device, dtype=torch.float32)
-        actor_loss = -self.critic.q1_net(obs, self(batch).act).mean()
+        actor_loss = -self.critic(obs, self(batch).act).mean()
         self.actor_optim.zero_grad()
         actor_loss.backward()
         self.actor_optim.step()
+        for name, param in self.actor.named_parameters():
+            print(f"✅ Gradient exists for {name}, mean grad: {param.grad.mean()}!")
         self.soft_update(self.target_critic, self.critic, self.tau)
         self.soft_update(self.target_actor, self.actor, self.tau)
         return {
@@ -141,6 +140,7 @@ class TD3BCPolicy(BasePolicy):
         model = self.actor if model == "actor" else self.target_actor
         obs = to_torch(batch[input], device=self.device, dtype=torch.float32)
         actions, hidden = model(obs), None
+        actions = F.softmax(actions, dim=-1)
         return Batch(act=actions, state=hidden)
 
     def exploration_noise(self, act: Union[np.ndarray, Batch], batch: Batch) -> Union[np.ndarray, Batch]:

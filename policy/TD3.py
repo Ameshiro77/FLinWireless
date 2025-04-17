@@ -37,7 +37,6 @@ class TD3Policy(BasePolicy):
         # about tasks:
         total_bandwidth: int = 100,
         num_choose: int = 5,
-        task='fed',
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)\
@@ -81,6 +80,7 @@ class TD3Policy(BasePolicy):
         if self.noise_clip > 0.0:
             noise = noise.clamp(-self.noise_clip, self.noise_clip)
         act_next += noise
+        act_next = F.softmax(act_next, dim=-1)
         target_q = self.target_critic.q_min(obs_next, act_next)
         return target_q
 
@@ -118,19 +118,20 @@ class TD3Policy(BasePolicy):
             obs = to_torch(batch.obs, device=self.device, dtype=torch.float32)
             act = self.forward(batch).act
 
+            #actor_loss = self.actor.loss(act, obs)-self.critic.q_min(obs, act).mean()
             actor_loss = -self.critic.q_min(obs, act).mean()
-            total_loss, self.loss_dict = self.actor.compute_loss(actor_loss)
+            # total_loss, self.loss_dict = self.actor.compute_loss(actor_loss)
 
             self.actor_optim.zero_grad()
-            total_loss.backward()
-            self.last_loss = total_loss.item()
+            actor_loss.backward()
+            self.last_loss = actor_loss.item()
             self.actor_optim.step()
 
             # soft update
             self.soft_update(self.target_critic, self.critic, self.tau)
             self.soft_update(self.target_actor, self.actor, self.tau)
 
-            print('q1 /q2 all_loss:', q1_loss, q2_loss, total_loss)
+            print('q1 /q2 all_loss:', q1_loss, q2_loss, actor_loss)
             for key, value in self.loss_dict.items():
                 print(f"{key}: {value}")
             for name, param in self.actor.named_parameters():
@@ -141,7 +142,7 @@ class TD3Policy(BasePolicy):
             "loss/critic1": q1_loss.item(),
             "loss/critic2": q2_loss.item(),
             **self.loss_dict,
-            "total_loss": self.last_loss,
+            "actor_loss": self.last_loss,
         }
 
     # process_fn -> learn -> post_process_fn(in base.ignore)
@@ -164,14 +165,21 @@ class TD3Policy(BasePolicy):
         model = self.actor if model == "actor" else self.target_actor
         obs = to_torch(batch[input], device=self.device, dtype=torch.float32)
         print(obs)
-        probs, allocs, actions = model(obs, exploration_fn)
+        # probs, allocs, actions = model(obs, exploration_fn)
+        actions = model(obs)
         hidden = None
-        return Batch(probs=probs, allocs=allocs, act=actions, state=hidden)
+        print(actions)
+        return Batch(act=actions, state=hidden)
 
-    def exploration_noise(self, act) -> Union[np.ndarray, Batch]:
+    def exploration_noise(self, act: Union[np.ndarray, Batch], batch: Batch) -> Union[np.ndarray, Batch]:
         if self.explore_noise is None:
             return act
-        else:
-            noise = torch.normal(mean=0.0, std=self.explore_noise, size=act.shape).to(self.device)
+        if isinstance(act, np.ndarray):
+            noise = np.random.normal(loc=0, scale=self.explore_noise, size=act.shape)
             act = act + noise
+            act = self._softmax(act)
         return act
+
+    def _softmax(self, act: np.ndarray):
+        act_tensor = F.softmax(torch.tensor(act, dtype=torch.float32), dim=-1)
+        return act_tensor.cpu().numpy()

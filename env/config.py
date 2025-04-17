@@ -26,9 +26,9 @@ def get_args():
     parser.add_argument('--device', type=str, default='cuda:0', help='Device to use')
 
     # env
-    parser.add_argument('--task', type=str, default='fed', choices=['fed', 'gym'])  # gym only used for tesing
     parser.add_argument('--base_noise', type=float, default=0.01, help="transmit noise")
-    # algo
+
+    # fed
     parser.add_argument('--dataset', type=str, default='MNIST', choices=['MNIST', 'CIFAR10', 'CIFAR100'],
                         help="Dataset to use.")
     parser.add_argument('--num_clients', type=int, default=10, help="Number of clients.")
@@ -48,30 +48,38 @@ def get_args():
     parser.add_argument('--fed_lr', type=float, default=0.01, help="federated learning rate")
     parser.add_argument('--fed_optim', type=str, default='adam',
                         choices=['adam', 'sgd'], help="Optimizer for federated learning")
+    parser.add_argument('--fed_train', action='store_true', default=False,
+                        help="may need not train if state dont require 'loss' and rew dont require 'acc'!!")
+
     # reward
     parser.add_argument('--return_coef', type=float, default=0.999, help='return coefficient')
-    parser.add_argument('--rew_a', type=float, default=1., help="reward of quality,auto give cost 1-a")
-    parser.add_argument('--rew_b', type=float, default=1., help="reward of time,and energy is 1-b")
+    parser.add_argument('--rew_a', type=float, default=1., help="reward of quality")
+    parser.add_argument('--rew_b', type=float, default=1., help="reward of time")
     parser.add_argument('--rew_c', type=float, default=1., help="reward of energy")
-    parser.add_argument('--rew_d', type=float, default=1., help="reward of data")
+    parser.add_argument('--rew_d', type=float, default=1., help="reward of penalty")
     parser.add_argument('--penalty_coef', type=float, default=2., help="parti penalty")
 
+    # net
+    parser.add_argument('--constant', type=int, default=10, help="hidden dim of net")
+
+    # task_type
     parser.add_argument('--no_allocation', action="store_true", default=False, help='without bandwidth allocation')
-    parser.add_argument('--top_k', type=int, default=0, help='if set 0,no fixed topk.')
+    parser.add_argument('--top_k', type=int, default=5, help='if set 0,no fixed topk.')
 
     # rl traning
     parser.add_argument('--algo', type=str, default='diff_sac')
+    parser.add_argument('--alloc_steps', type=int, default=20)
     parser.add_argument('--dbranch', action="store_true", default=False, help='if use 2 branch')
     parser.add_argument('--threshold', type=float, default=0.8)
     parser.add_argument('--lambda_1', type=float, default=1.0, help='loss align')
     parser.add_argument('--lambda_2', type=float, default=1.0, help='loss boost')
     parser.add_argument('--no_logger', action='store_true', default=False, help='no tensorboard')
 
-    parser.add_argument('--epochs', type=int, default=3, help=':is epsilons')
-    parser.add_argument('--actor_lr', type=float, default=1e-3)
+    parser.add_argument('--epochs', type=int, default=80, help=':is epsilons')
+    parser.add_argument('--actor_lr', type=float, default=1e-4)
     parser.add_argument('--critic_lr', type=float, default=1e-3)
 
-    parser.add_argument('--step_per_collect', type=int, default=10, help='idk how to set')
+    parser.add_argument('--step_per_collect', type=int, default=20, help='idk how to set')
     parser.add_argument('--training_num', type=int, default=1, help='testing epochs')
     parser.add_argument('--test_num', type=int, default=1, help='testing epochs')
     parser.add_argument('--datas_per_update', type=int, default=16, help='batch size')
@@ -79,7 +87,7 @@ def get_args():
 
     parser.add_argument('--resume', action='store_true', default=False, help='resume training')
     parser.add_argument('--evaluate', action='store_true', default=False, help='evaluate')
-    parser.add_argument('--ckpt_dir', type=str, default='./exp', help='save path')
+    parser.add_argument('--ckpt_dir', type=str, default=None, help='save path')
     parser.add_argument('--remark', type=str, default='', help='remark')
 
     return parser.parse_args()

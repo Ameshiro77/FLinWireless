@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 from helpers import SinusoidalPosEmb
 import math
+import torch.nn.functional as F
+
 
 class MLP(nn.Module):
     def __init__(
@@ -23,15 +25,49 @@ class MLP(nn.Module):
             nn.Linear(hidden_dim, action_dim),
         )
         self.final_layer = nn.Tanh()
-   
 
     def forward(self, x, time, state):  # x:action
         t = self.time_mlp(time)
         state = state.reshape(state.size(0), -1)
         x = torch.cat([x, t, state], dim=1)  # 16(t) + action(x) + state
-        
         x = self.mid_layer(x)
         return self.final_layer(x)
+
+
+class Critic_V(nn.Module):
+    def __init__(self, state_dim, hidden_dim=256, activation="ReLU"):
+        super().__init__()
+        _act = nn.Mish if activation == "mish" else nn.LeakyReLU
+        self.q_net = nn.Sequential(
+            nn.Linear(state_dim, hidden_dim),
+            _act(),
+            nn.Linear(hidden_dim, hidden_dim),
+            _act(),
+            nn.Linear(hidden_dim, 1),
+        )
+
+    def forward(self, obs):
+        obs = obs.reshape(obs.size(0), -1)
+        return self.q_net(obs)
+
+
+class Critic_Q(nn.Module):
+    def __init__(self, state_dim, action_dim, hidden_dim=256, activation="mish"):
+        super().__init__()
+        _act = nn.Mish if activation == "mish" else nn.ReLU
+        self.q_net = nn.Sequential(
+            nn.Linear(state_dim + action_dim, hidden_dim),
+            _act(),
+            nn.Linear(hidden_dim, hidden_dim),
+            _act(),
+            nn.Linear(hidden_dim, 1),
+        )
+
+    def forward(self, obs, act):
+        obs = obs.reshape(obs.size(0), -1)
+        act = act.reshape(act.size(0), -1)
+        x = torch.cat([obs, act], dim=1)
+        return self.q_net(x)
 
 
 class DoubleCritic(nn.Module):
@@ -64,8 +100,35 @@ class DoubleCritic(nn.Module):
 
     def q_min(self, obs, act):
         obs = obs.reshape(obs.size(0), -1)
+        print(act)
         act = act.reshape(act.size(0), -1)
         return torch.min(*self.forward(obs, act))
+
+
+# ==
+# output final probs.
+class SingleHeadAttention(nn.Module):
+    def __init__(self, hidden_dim):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.query_proj = nn.Linear(hidden_dim, hidden_dim)
+        self.key_proj = nn.Linear(hidden_dim, hidden_dim)
+
+    def forward(self, query, key, mask=None):
+        # query: (B, 1, H), key: (B, N, H)
+        Q = self.query_proj(query)  # (B, 1, H)
+        K = self.key_proj(key)      # (B, N, H)
+       
+        # 注意力分数: (B, 1, N)
+        scores = torch.bmm(Q, K.transpose(1, 2)) / math.sqrt(self.hidden_dim)  # Q·K^T / sqrt(d)
+      
+        scores = 10 * torch.tanh(scores)
+        if mask is not None:
+            scores = scores.masked_fill(mask.unsqueeze(1), float('-inf'))  # (B, 1, N)
+    
+        # probs = F.softmax(scores, dim=-1).squeeze(1)  # (B, N)
+        return scores
+
 
 class MultiHeadAttention(nn.Module):
 

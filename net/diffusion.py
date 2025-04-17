@@ -133,7 +133,7 @@ class Diffusion(nn.Module):
         if t_step_res:
             return F.softmax(action, dim=-1), F.softmax(t_step_res, dim=-1)
         else:
-            return action
+            # return action
             return F.softmax(action, dim=-1)
 
     def q_sample(self, x_start, t, noise=None):
@@ -189,9 +189,14 @@ if __name__ == '__main__':
     # 训练循环
     for epoch in range(10):  # 训练 1000 个 epoch
         actor_optim.zero_grad()  # 清零梯度
-        loss = actor.loss(actions, states)  # 计算损失
-        loss.backward()  # 反向传播
-        print(loss)
+        # loss = actor.loss(actions, states)  # 计算损失
+        action = actor.sample(states)
+        #loss.backward()  # 反向传播
+        # print(loss)
+        dist = torch.distributions.Categorical(action)
+        e = dist.entropy().mean()
+        print(e)
+        e.backward()
         for name, param in actor.named_parameters():
             if param.grad is None:
                 print(f"⚠️ WARNING: No gradient for {name}")
