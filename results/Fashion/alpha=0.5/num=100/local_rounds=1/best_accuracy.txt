@@ -1,0 +1,5 @@
+Best Smoothed Accuracy Comparison (alpha=0.5, num=100)
+fedavg: 0.8303
+fedcs: 0.8335
+greedy: 0.8044
+ppo_best_result.json: 0.8297

@@ -4,74 +4,111 @@ import json
 import os
 
 
-def save_figs(results_dir):
-# 读取指定目录下的所有 result json 文件
-    json_files = [f for f in os.listdir(results_dir) if f.endswith('result.json')]
+def smooth_data(y, window_size=5):
+    """对数据应用滑动窗口平均（Moving Average）"""
+    if len(y) < window_size:
+        return y  # 数据点太少，不处理
+    window = np.ones(window_size) / window_size
+    return np.convolve(y, window, mode='valid')  # 'valid' 模式会减少数据点
 
-    # 初始化数据容器
-    accuracies = {}
-    times = {}
-    energies = {}
+def save_figs(results_root_dir, smooth_window=5):
+    # 遍历所有数据集目录（如 CIFAR10）
+    for dataset_name in os.listdir(results_root_dir):
+        dataset_dir = os.path.join(results_root_dir, dataset_name)
+        if not os.path.isdir(dataset_dir):
+            continue
 
-    # 加载所有 json 文件数据
-    for json_file in json_files:
-        file_path = os.path.join(results_dir, json_file)  # 获取文件的完整路径
-        with open(file_path, 'r') as f:
-            result = json.load(f)
+        # 递归查找所有子目录中的 _result.json 文件
+        for root, _, files in os.walk(dataset_dir):
+            json_files = [f for f in files if f.endswith('_result.json')]
+            if not json_files:
+                continue
+
+            # 提取 alpha 和 num 参数（从路径中）
+            path_parts = root.split(os.sep)
+            alpha_part = next((p for p in path_parts if p.startswith('alpha=')), None)
+            num_part = next((p for p in path_parts if p.startswith('num=')), None)
+
+            # 初始化数据结构
+            acc_data = {}
+            time_data = {}
+            energy_data = {}
+
+            # 读取所有JSON文件
+            for json_file in json_files:
+                file_path = os.path.join(root, json_file)
+                with open(file_path, 'r') as f:
+                    result = json.load(f)
+                
+                method_name = json_file.replace(f'_{dataset_name}_result.json', '')
+                
+                # 存储准确率数据（应用滑动平均）
+                acc_values = result['global_accuracy']
+                smoothed_acc = smooth_data(acc_values, smooth_window)
+                acc_data[method_name] = {
+                    'rounds': result['current_round'][:len(smoothed_acc)],  # 调整 rounds 长度
+                    'values': smoothed_acc
+                }
+                
+                # 存储总时间和总能耗
+                time_data[method_name] = sum(result['total_time'])
+                energy_data[method_name] = sum(result['total_energy'])
+
+            # 生成图表文件名前缀（包含alpha和num信息）
+            prefix = ""
+            if alpha_part and num_part:
+                prefix = f"{alpha_part}_{num_part}_"
+            elif alpha_part:
+                prefix = f"{alpha_part}_"
+            elif num_part:
+                prefix = f"{num_part}_"
+
+            # 1. 绘制平滑后的准确率对比折线图
+            plt.figure(figsize=(12, 6))
+            for method_name, data in acc_data.items():
+                plt.plot(data['rounds'], data['values'], label=method_name)
+            plt.xlabel('Round')
+            plt.ylabel('Global Accuracy (Smoothed)')
+            plt.title(f'{dataset_name} - Smoothed Accuracy Comparison ({alpha_part}, {num_part})')
+            plt.grid(True, linestyle='--', alpha=0.6)
+            plt.legend()
+            plt.savefig(os.path.join(root, f'accuracy_comparison.png'))
+            plt.close()
+
+            # 2. 绘制总时间对比柱状图（保持不变）
+            plt.figure(figsize=(12, 6))
+            plt.bar(time_data.keys(), time_data.values())
+            plt.xlabel('Methods')
+            plt.ylabel('Total Time (s)')
+            plt.title(f'{dataset_name} - Total Time Comparison ({alpha_part}, {num_part})')
+            plt.xticks(rotation=45)
+            plt.savefig(os.path.join(root, f'time_comparison.png'), bbox_inches='tight')
+            plt.close()
+
+            # 3. 绘制总能耗对比柱状图（保持不变）
+            plt.figure(figsize=(12, 6))
+            plt.bar(energy_data.keys(), energy_data.values(), color='orange')
+            plt.xlabel('Methods')
+            plt.ylabel('Total Energy (J)')
+            plt.title(f'{dataset_name} - Total Energy Comparison ({alpha_part}, {num_part})')
+            plt.xticks(rotation=45)
+            plt.savefig(os.path.join(root, f'energy_comparison.png'), bbox_inches='tight')
+            plt.close()
+
+            print(f"图表已保存到 {root} ({prefix})")
             
-            # 提取每个文件的 round 和对应的 global_accuracy, total_time, total_energy
-            name = json_file.replace('_result.json', '')  # 使用文件名作为区分标识
-            accuracies[name] = result['global_accuracy']
-            
-            # 对每个文件的 total_time 和 total_energy 进行求和
-            times[name] = sum(result['total_time'])  # 假设total_time存在并且是一个列表
-            energies[name] = sum(result['total_energy'])  # 假设total_energy存在并且是一个列表
+            # 4. 写入每种方法的最高准确率到文本文件
+            best_acc_lines = []
+            for method_name, data in acc_data.items():
+                max_acc = max(data['values'])
+                best_acc_lines.append(f"{method_name}: {max_acc:.4f}")
+            best_acc_text = "\n".join(best_acc_lines)
 
-    # 1. 比较 global_accuracy 的对比折线图
-    plt.figure(figsize=(12, 6))
-    for name, accuracy in accuracies.items():
-        plt.plot(result['current_round'], accuracy, label=name)
+            with open(os.path.join(root, 'best_accuracy.txt'), 'w') as f:
+                f.write(f"Best Smoothed Accuracy Comparison ({alpha_part}, {num_part})\n")
+                f.write(best_acc_text + "\n")
 
-    plt.xlabel('Round')
-    plt.ylabel('Global Accuracy')
-    plt.title('Global Accuracy over Rounds')
-    plt.grid(True)
-    plt.legend()
-
-    # 保存图表到 results 目录
-    plt.savefig(os.path.join(results_dir, 'global_accuracy_comparison.png'))
-    plt.close()
-
-    # 2. 比较 total_time 的对比柱状图，进行求和
-    plt.figure(figsize=(12, 6))
-    # 设置宽度为 0.3，避免柱状图铺满整个图表
-    plt.bar(times.keys(), times.values(), color='g', width=0.1)
-
-    plt.xlabel('Result Files')
-    plt.ylabel('Total Time (s)')
-    plt.title('Total Time (Sum) over Rounds')
-
-    # 保存图表到 results 目录
-    plt.savefig(os.path.join(results_dir, 'total_time_comparison.png'))
-    plt.close()
-
-    # 3. 比较 total_energy 的对比柱状图，进行求和
-    plt.figure(figsize=(12, 6))
-    # 设置宽度为 0.3，避免柱状图铺满整个图表
-    plt.bar(energies.keys(), energies.values(), color='r', width=0.1)
-
-    plt.xlabel('Result Files')
-    plt.ylabel('Total Energy (J)')
-    plt.title('Total Energy (Sum) over Rounds')
-
-    # 保存图表到 results 目录
-    plt.savefig(os.path.join(results_dir, 'total_energy_comparison.png'))
-    plt.close()
-
-    print("Charts have been saved to the 'results' directory.")
 
 if __name__ == '__main__':
-    # 指定存放结果文件的目录
     results_dir = './results'
-    #results_dir = './exp/20250408_150333'
-    save_figs(results_dir)
+    save_figs(results_dir,smooth_window=1)

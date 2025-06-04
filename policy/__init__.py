@@ -20,10 +20,15 @@ def choose_policy(actor, actor_optim, critic, critic_optim, args):
     elif algo == 'ppo':
         policy = PPOPolicy(
             actor,
+            actor_optim,
             critic,
-            optim_lr=1e-4,
+            critic_optim,
             dist_fn=torch.distributions.Categorical,
             device=args.device,
+            ent_coef=0.01,
+            #max_batchsize=32,
+            max_grad_norm=0.5,
+            scheduler_iters= args.epochs * 5,
         )
     return policy
     algo = args.algo.split('_')[-1]

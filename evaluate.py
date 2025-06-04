@@ -23,70 +23,137 @@ from baselines import *
 from datetime import datetime
 from tianshou.data import Batch
 import json
+from tianshou.data import Collector
+import re
+from types import SimpleNamespace
+
+
+def load_args_from_txt(file_path):
+    with open(file_path, 'r') as f:
+        lines = f.readlines()
+
+    args_dict = {}
+    in_args_section = False
+
+    for line in lines:
+        line = line.strip()
+        if line.startswith("args:"):
+            in_args_section = True
+            continue
+        if in_args_section and ":" in line:
+            key, value = line.split(":", 1)
+            key = key.strip()
+            value = value.strip()
+
+            # 转换数据类型
+            if value.lower() == "true":
+                value = True
+            elif value.lower() == "false":
+                value = False
+            elif value.lower() == "none":
+                value = None
+            elif "." in value and value.replace(".", "", 1).isdigit():
+                value = float(value)
+            elif value.isdigit():
+                value = int(value)
+
+            args_dict[key] = value
+
+    # 强制移除 ckpt_dir
+    args_dict.pop("ckpt_dir", None)
+
+    return SimpleNamespace(**args_dict)
+
 
 if __name__ == "__main__":
-
     args = get_args()
-    env, train_envs, test_envs = gen_env(args)
-    env.is_fed_train = True
-    # === 计算 state_dim action_dim ===
-    state_dim = 0
-    for key, space in env.observation_space.spaces.items():
-        if isinstance(space, spaces.Discrete):
-            state_dim += 1  # Discrete 空间是标量
-        elif isinstance(space, spaces.Box):
-            state_dim += np.prod(space.shape)
+    root_exp_dir = args.ckpt_dir  #顶层目录
+    print("Experiment root:", root_exp_dir)
+
+    def is_leaf_dir(d):
+        return all(not os.path.isdir(os.path.join(d, f)) for f in os.listdir(d))
+
+    for subdir, _, files in os.walk(root_exp_dir):
+        if not is_leaf_dir(subdir):
+            continue
+        if not any(f.endswith(".pth") for f in files):
+            continue
+
+        # === 加载 config.txt ===
+        config_path1 = os.path.join(subdir, "config.txt")
+        config_path2 = os.path.join(subdir, "data", "config.txt")
+        if os.path.exists(config_path1):
+            args = load_args_from_txt(config_path1)
+        elif os.path.exists(config_path2):
+            args = load_args_from_txt(config_path2)
         else:
-            raise ValueError(f"Unsupported space type: {type(space)}")
-    state_dim = 70
-    action_dim = args.num_clients
+            print(f"No config.txt found in {subdir}, skipping.")
+            continue
 
-    # # === 指定 actor 以及对应optim ===
-    actor, critic = choose_actor_critic(state_dim, action_dim, args)
-    actor_optim = torch.optim.Adam(actor.parameters(), args.actor_lr)
-    critic_optim = torch.optim.Adam(critic.parameters(), lr=args.critic_lr)
-    # # === 初始化RL模型 ===
-    policy = choose_policy(actor, actor_optim, critic, critic_optim, args)
-    # policy = RandomPolicy(args).cuda()
+        print("Loaded args from:", subdir)
+        np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
+        if args.task == 'acc':
+            args.rew_b = args.rew_c = args.rew_d = 0.0
 
-    exp_dir = args.ckpt_dir
-    PATH = os.path.join(exp_dir, args.algo + "_ckpt.pth")
-    print("model path:", PATH)
-    policy.load_state_dict(torch.load(PATH))
-    print("model loaded!")
+        # 初始化模型
+        num_choose = args.num_choose
+        state_dim = (args.input_dim + args.hidden_size) * args.num_clients
+        actor, critic = choose_actor_critic(state_dim, num_choose, args)
+        actor_optim = torch.optim.Adam(actor.parameters(), args.actor_lr)
+        critic_optim = torch.optim.Adam(critic.parameters(), lr=args.critic_lr)
+        policy = choose_policy(actor, actor_optim, critic, critic_optim, args)
 
-    print("======== evaluate =======")
-    np.random.seed(args.seed)
-    policy.eval()
-    obs, info = env.reset()  # 重置环境，返回初始观测值
-    result_dict = {
-        'current_round': [],
-        'global_loss': [],
-        'global_accuracy': [],
-        'total_time': [],
-        'total_energy': [],
-        'env_all_time': [],
-        'env_all_energy': [],
-    }
+        # 初始化环境
+        env, train_envs, test_envs = gen_env(args)
 
-    # from tianshou.policy
-    done = False
-    while not done:
-        batch = Batch(obs=[obs])  # 第一维是 batch size
-        act = policy(batch).act[0]
-        if isinstance(act, torch.Tensor):
-            act = act.cpu().detach().numpy()  # policy.forward 返回一个 batch，使用 ".act" 来取出里面action的数据
-        obs, rew, done, done, info = env.step(act)
-        for key, value in info.items():
-            result_dict[key].append(value)
-        if done:
-            break
-    env.close()
+        # 遍历子目录下的所有 .pth 模型
+        for f in files:
+            if not f.endswith(".pth"):
+                continue
+            pth_path = os.path.join(subdir, f)
+            print("Loading model:", pth_path)
+            try:
+                policy.load_state_dict(torch.load(pth_path, map_location="cpu"))
+                print("Model loaded.")
+            except Exception as e:
+                print(f"Failed to load {pth_path}: {e}")
+                continue
 
-    print(result_dict)
-    # res_dir = f"result/{timestamp}"
-    with open(os.path.join(exp_dir, "result.json"), "w") as f:
-        json.dump(result_dict, f, indent=4)
+            # Evaluate
+            print("======== evaluate =======")
+            policy.eval()
+            obs, info = env.reset()
+            result_dict = {
+                'current_round': [],
+                'global_accuracy': [],
+                'total_time': [],
+                'total_energy': [],
+                'reward': [],
+            }
 
-    # from plot import save_figs
-    # save_figs(exp_dir)
+            done = False
+            while not done:
+                batch = Batch(obs=[obs], info=info)
+                act = policy(batch).act[0]
+                if isinstance(act, torch.Tensor):
+                    act = act.cpu().detach().numpy()
+                obs, rew, done, done, info = env.step(act)
+                for key, value in info.items():
+                    if key in result_dict:
+                        result_dict[key].append(value)
+                if done:
+                    break
+            env.close()
+            del env, train_envs, test_envs
+            del actor, critic, actor_optim, critic_optim, policy
+            print("Eval done.")
+            returns = []
+            G = 0
+            for rew in reversed(result_dict["reward"]):
+                G = rew + 0.99 * G
+                returns.insert(0, G)
+            print("Return:", G)
+
+            with open(os.path.join(subdir, f.replace(".pth", "_result.json")), "w") as f_out:
+                json.dump(result_dict, f_out, indent=4)

@@ -1,0 +1,2 @@
+Best Smoothed Accuracy Comparison (None, None)
+20_0.5_result.json: 0.9815

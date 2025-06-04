@@ -69,13 +69,18 @@ class TD3Policy(BasePolicy):
 
         self.total_bandwidth = total_bandwidth
         self.loss_dict = {}
+        
+        self.lr_scheduler = torch.optim.lr_scheduler.LinearLR(
+            self.actor_optim, start_factor=1.0, end_factor=0.2, total_iters=50
+        )
 
     # === use to compute return ===
 
     def _target_q(self, buffer: ReplayBuffer, indices: np.ndarray) -> torch.Tensor:
         batch = buffer[indices]
         act_next = self.forward(batch, model="target_actor", input="obs_next").act
-        obs_next = torch.FloatTensor(batch.obs_next).to(self.device)
+        # print(batch)
+        obs_next = to_torch(batch.obs_next,device=self.device, dtype=torch.float32)
         noise = torch.randn(size=act_next.shape, device=act_next.device) * self.policy_noise
         if self.noise_clip > 0.0:
             noise = noise.clamp(-self.noise_clip, self.noise_clip)
@@ -118,7 +123,7 @@ class TD3Policy(BasePolicy):
             obs = to_torch(batch.obs, device=self.device, dtype=torch.float32)
             act = self.forward(batch).act
 
-            #actor_loss = self.actor.loss(act, obs)-self.critic.q_min(obs, act).mean()
+            # actor_loss = self.actor.loss(act, obs)-self.critic.q_min(obs, act).mean()
             actor_loss = -self.critic.q_min(obs, act).mean()
             # total_loss, self.loss_dict = self.actor.compute_loss(actor_loss)
 
@@ -132,10 +137,13 @@ class TD3Policy(BasePolicy):
             self.soft_update(self.target_actor, self.actor, self.tau)
 
             print('q1 /q2 all_loss:', q1_loss, q2_loss, actor_loss)
-            for key, value in self.loss_dict.items():
-                print(f"{key}: {value}")
+            # for key, value in self.loss_dict.items():
+            #     print(f"{key}: {value}")
             for name, param in self.actor.named_parameters():
-                print(f"✅ Gradient exists for {name}, mean grad: {param.grad}!")
+                if param.grad is not None:
+                    print(f"✅ Gradient exists for {name}, mean grad: {param.grad.mean():.4f}!")
+                else:
+                    print(f"❌ No gradient for {name}!")
         self.cnt += 1
 
         return {
@@ -164,11 +172,11 @@ class TD3Policy(BasePolicy):
     def forward(self, batch: Batch, model: str = "actor", input: str = "obs", exploration_fn=None, **kwargs: Any,) -> Batch:
         model = self.actor if model == "actor" else self.target_actor
         obs = to_torch(batch[input], device=self.device, dtype=torch.float32)
-        print(obs)
         # probs, allocs, actions = model(obs, exploration_fn)
         actions = model(obs)
         hidden = None
-        print(actions)
+        # print(actions)
+      
         return Batch(act=actions, state=hidden)
 
     def exploration_noise(self, act: Union[np.ndarray, Batch], batch: Batch) -> Union[np.ndarray, Batch]:

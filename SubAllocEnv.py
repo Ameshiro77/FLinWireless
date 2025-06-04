@@ -25,37 +25,67 @@ from tools.misc import *
 from datetime import datetime
 
 
+def minmax_normalize(x: np.ndarray | list, min_val=None, max_val=None):
+    x = np.array(x) if isinstance(x, list) else x
+    if min_val is None:
+        min_val = np.min(x)
+    if max_val is None:
+        max_val = np.max(x)
+    return (x - min_val) / (max_val - min_val)
+
+
+def zscore_normalize(x: np.ndarray | list, mean=None, std=None):
+    x = np.array(x) if isinstance(x, list) else x
+    if mean is None:
+        mean = np.mean(x)
+    if std is None:
+        std = np.std(x)
+    if std == 0:
+        return x  # 避免除以零
+    return (x - mean) / std
+
+
+def sum_normalize(x: np.ndarray | list):
+    x = np.array(x) if isinstance(x, list) else x
+    return x / x.sum()
+
+
 class SubAllocEnv(gym.Env):
     def __init__(self, args, dataset: FedDataset, clients: list[Client], model=None, env_type="train"):
         self.args = args
         self.dataset = dataset
         # 用于决定训练RL时是否需要真正训练。
         self.env_type = env_type
-        if env_type == "train":
-            self.is_fed_train = args.fed_train
-        else:
-            self.is_fed_train = True
         self.is_alloc_train = False  # 用于区分是否在训练。训练时需要针对选中客户端做cost归一化，奖励函数不一样。
         self.comm_rounds = 0
         self.alloc_steps = args.alloc_steps
         self.clients = clients
-        self.selects_num = args.top_k
+
+        self.clients_num = len(self.clients)
+        self.selects_num = len(self.clients)
         self.action_space = spaces.Box(
             low=0, high=1, shape=(self.selects_num,), dtype=np.float32
         )
-        self.selects = [0] * self.selects_num  # index
-        self.max_T, self.min_T, self.max_E, self.min_E = 0, 0, 0, 0
+        self.selects = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+        self.max_T, self.min_T, self.max_E, self.min_E = self._get_boundary_cost()
         # STATE
-        self.gains = [client.attr_dict["gain"] for client in self.clients[:5]]
-        self.data_sizes = [len(client.local_dataset) for client in self.clients[:5]]
-        self.frequecies = [client.attr_dict["cpu_frequency"] for client in self.clients[:5]]
-        self.distances = [client.attr_dict["distance"] for client in self.clients[:5]]
+        self.gains = np.array([client.attr_dict["gain"] for client in self.clients[:self.selects_num]])
+        self.data_sizes = np.array([len(client.local_dataset) for client in self.clients[:self.selects_num]])
+        self.frequecies = np.array([client.attr_dict["cpu_frequency"] for client in self.clients[:self.selects_num]])
+        self.powers = np.array([client.attr_dict["transmit_power"] for client in self.clients[:self.selects_num]])
+        # self.distances = np.array([client.attr_dict["distance"] for client in self.clients[:self.selects_num]])
         self.init_allocations = np.ones(self.selects_num) / self.selects_num
         self.init_times = [self.min_T] * self.selects_num
         self.init_energies = [self.min_E] * self.selects_num
+
         self.all_allocations = np.zeros(self.selects_num)
         self.all_times = np.zeros(self.selects_num)
         self.all_energies = np.zeros(self.selects_num)
+
+        self.history_allocs = np.zeros((self.clients_num, 5))
+        self.history_times = np.zeros(self.clients_num)
+        self.history_energies = np.zeros(self.clients_num)
+
         self.observation_space = spaces.Dict(
             {
                 "gains": spaces.Box(
@@ -90,12 +120,11 @@ class SubAllocEnv(gym.Env):
 
     # get min-max T&E of selected clients for stationary use
     # but in fed env,we use the whole T&E
-    def _get_boundary_cost(self, selects):
-        # selected_indices = [i for i, mask in enumerate(selects_mask) if mask == 1]
-        selected_clients = [self.clients[i] for i in selects]
+    def _get_boundary_cost(self):
+        # 仅仅作为近似的手段，主要用于归一化。
         min_rb_lst = []
         max_rb_lst = []
-        for client in selected_clients:  # 得到最大/小rate时的rb。（实验结果递增）
+        for client in self.clients:  # 得到最大/小rate时的rb
             min_rate = max_rate = 0
             min_rb = max_rb = 1
             for i in range(TOTAL_BLOCKS):
@@ -105,18 +134,26 @@ class SubAllocEnv(gym.Env):
                     max_rb = i + 1
                 if rate < min_rate:
                     min_rb = i + 1
+            min_rb = max(min_rb, TOTAL_BLOCKS/20)  # 过小会导致时间过大，无法正常归一化。xlog(1+1/x)
             min_rb_lst.append(min_rb)
             max_rb_lst.append(max_rb)
+        print(min_rb_lst)
         # 算max min T
-        max_T, min_T, max_E, min_E = 0, 0, 0, 0
-        for client in selected_clients:  # 得到最大/小rate时的rb。（实验结果递增）
-            client.set_rb_num(max_rb)  # T min (rate max)
-        all_T, all_E = zip(*[client.get_cost() for client in selected_clients])
-        min_T, min_E = min(all_T), min(all_E)
-        for client in selected_clients:
-            client.set_rb_num(int(TOTAL_BLOCKS/len(self.clients)))  # T min (rate max)
-        all_T, all_E = zip(*[client.get_cost() for client in selected_clients])
-        max_T, max_E = max(all_T), sum(all_E)
+        min_Ts = []
+        max_Ts = []
+        for i, client in enumerate(self.clients):  # 得到最大/小rate时的rb。（实验结果递增）
+            client.set_rb_num(max_rb_lst[i])  # T min (rate max)
+            min_Ts.append(client.get_cost()[0])
+            client.set_rb_num(min_rb_lst[i])  # T max
+            max_Ts.append(client.get_cost()[0])
+        min_T, max_T = min(min_Ts), max(max_Ts)  # min也是近似。
+
+        # 难以求解，故近似。
+        for client in self.clients:
+            client.set_rb_num(int(TOTAL_BLOCKS/self.clients_num))  # T min (rate max)
+        all_E = [client.get_cost()[1] for client in self.clients]
+        max_E = max(all_E) * self.selects_num
+        min_E = min(all_E) * self.selects_num
 
         print(f" * Clients: max_T:{max_T}, min_T:{min_T}, max_E:{max_E}, min_E:{min_E}")
         return max_T, min_T, max_E, min_E
@@ -127,7 +164,7 @@ class SubAllocEnv(gym.Env):
         self.data_sizes = [len(self.clients[i].local_dataset) for i in self.selects]
         self.gains = [self.clients[i].attr_dict["gain"] for i in self.selects]
         self.frequecies = [self.clients[i].attr_dict["cpu_frequency"] for i in self.selects]
-        self.distances = [self.clients[i].attr_dict["distance"] for i in self.selects]
+        # self.distances = [self.clients[i].attr_dict["distance"] for i in self.selects]
 
     # 需要返回初始state和info。
     # must select before reset and step.
@@ -135,26 +172,30 @@ class SubAllocEnv(gym.Env):
 
         # 重置各自客户端模型 以及 全局模型
         blank = np.zeros(self.selects_num)
+        self.history_allocs = np.zeros((self.clients_num, 5))
         info = {}  # must dict
         obs = {
-            "gains": self.gains,
-            "data_sizes": self.data_sizes,
-            "frequecies": self.frequecies,
-            # "allocations": self.init_allocations,
-            # "times": [self.min_T] * self.selects_num,
-            # "energys": [self.min_E] * self.selects_num,
-            "all_allocations": blank,
-            "all_times": blank,
-            "all_energies": blank,
+            "gains": zscore_normalize(self.gains),
+            "data_sizes": zscore_normalize(self.data_sizes),
+            "frequecies": zscore_normalize(self.frequecies),
+            "powers": zscore_normalize(self.powers),
+            # "gains": self.gains,
+            # "data_sizes": self.data_sizes,
+            # "frequecies": self.frequecies,
+            "allocations": self.history_allocs,
+            # "times": blank,
+            # "energies": blank,
+            # "all_times": blank,
+            # "all_energies": blank,
         }
         self.all_allocations = blank
         self.all_energies = blank
         self.all_times = blank
         self.comm_rounds = 0
         self.observation.update(obs)
-        obs = self.dict_to_vector(obs)
-        print("select:", self.selects)
-        print("reset", obs.reshape(6, -1))
+        # obs = self.dict_to_vector(obs)
+        # print("select:", self.selects)
+        # print("reset", obs.reshape(6, -1))
         return obs, info
 
     """
@@ -167,8 +208,8 @@ class SubAllocEnv(gym.Env):
         print("\n==Allocs==")
         print(f"train or test:{self.env_type}")
         print(action)
-        if (action.sum()-1) > 0.001:
-            raise ValueError('bandwidth sum error')
+        # if (action.sum()-1) > 0.001:
+        #     raise ValueError('bandwidth sum error')
         if isinstance(action, torch.Tensor):
             action = action.cpu().numpy()
         if np.any(action < 0):
@@ -184,21 +225,22 @@ class SubAllocEnv(gym.Env):
 
         # ==================
         # 匈牙利匹配
-        cost_matrix = np.zeros((self.selects_num, self.selects_num))
-        for i, client in enumerate(select_clients):
-            for j, rb_num in enumerate(alloc_blocks):
-                client.set_rb_num(max(1, rb_num))  # 确保最小资源为1
-                T, E = client.get_cost()
-                time_rew = (T - self.min_T) / (self.max_T - self.min_T)
-                energy_rew = (E - self.min_E) / (self.max_E - self.min_E)
-                reward = (- args.rew_b * time_rew - args.rew_c * energy_rew) * 20
-                cost_matrix[i][j] = -reward
-        row_ind, col_ind = linear_sum_assignment(cost_matrix)
-        best_alloc = np.zeros(self.selects_num, dtype=np.int32)
-        for i, j in zip(row_ind, col_ind):
-            best_alloc[i] = max(1, alloc_blocks[j])  # 确保每个 client 至少一个
-        alloc_blocks = best_alloc
-        stats = []
+        if args.hungarian:
+            cost_matrix = np.zeros((self.selects_num, self.selects_num))
+            for i, client in enumerate(select_clients):
+                for j, rb_num in enumerate(alloc_blocks):
+                    client.set_rb_num(max(1, rb_num))  # 确保最小资源为1
+                    T, E = client.get_cost()
+                    time_rew = (T - self.min_T) / (self.max_T - self.min_T)
+                    energy_rew = (E - self.min_E) / (self.max_E - self.min_E)
+                    reward = (- args.rew_b * time_rew - args.rew_c * energy_rew) * 20
+                    cost_matrix[i][j] = -reward
+            row_ind, col_ind = linear_sum_assignment(cost_matrix)
+            best_alloc = np.zeros(self.selects_num, dtype=np.int32)
+            for i, j in zip(row_ind, col_ind):
+                best_alloc[i] = max(1, alloc_blocks[j])  # 确保每个 client 至少一个
+            alloc_blocks = best_alloc
+            stats = []
         # ====================
 
         # ======================
@@ -217,21 +259,25 @@ class SubAllocEnv(gym.Env):
         total_time = max(times)
         total_energy = sum(energys)
         # ======================
+        for client in self.clients:
+            client.update_state()
 
         # == 设计奖励 & 返回值 ==
         time_rew = (total_time - self.min_T) / (
             self.max_T - self.min_T
         )  # min-max normalize
         energy_rew = (total_energy - self.min_E) / (self.max_E - self.min_E)
-        reward = (- args.rew_b * time_rew - args.rew_c * energy_rew) * 100
+        # reward = (- args.rew_b * time_rew - args.rew_c * energy_rew) * 100
+        reward = (total_time + total_energy / 10) * -10
+        if (action.sum()-1) > 0.001:
+            reward = -500
         # min_rew = (- args.rew_b - args.rew_c) * 100
         # reward = min_rew if reward < min_rew else reward
         print(
-            f"Bandwidth alloc reward: {reward} total_time: {total_time} total_energy: {total_energy} reward T&E: {-time_rew}, {-energy_rew}")
+            f"Bandwidth alloc reward: {reward} total_time: {total_time} total_energy: {total_energy} reward T&E: {-time_rew}, {-energy_rew} \n\
+                max T AND E:{self.max_T}, {self.max_E} min T AND E:{self.min_T}, {self.min_E}")
         # ======================
 
-        max_all_T = self.max_T * self.alloc_steps
-        max_all_E = self.max_E * self.alloc_steps
         self.all_allocations = (self.all_allocations + alloc_blocks / self.total_bandwidth)
         self.all_times = self.all_times + times
         self.all_energies = self.all_energies + energys
@@ -239,29 +285,41 @@ class SubAllocEnv(gym.Env):
         # step函数返回：observation, reward, done, done ,info
         # only update dynamic here.must select before step!
         # 如果除以总轮数 反映相对总值 如果除以当前轮数 相当于归一化到0~1
+
+        self.history_allocs[:, :-1] = self.history_allocs[:, 1:]  # numpy has no pop()
+        self.history_allocs[:, -1] = action
+        self.history_times[:-1] = self.history_times[1:]
+        self.history_times[-1] = total_time
+        self.history_energies[:-1] = self.history_energies[1:]
+        self.history_energies[-1] = total_energy
+
         obs = {
-            "gains": self.gains,
-            "data_sizes": self.data_sizes,
-            "frequecies": self.frequecies,
-            # "allocations": action,
-            # "times": [(stat["time"]-self.min_T)/(self.max_T-self.min_T) for stat in stats],
-            # "energys": [(stat["energy"]-self.min_E)/(self.max_E-self.min_E) for stat in stats]
-            "all_allocations": self.all_allocations / self.comm_rounds,
-            "all_times": minmax_normalize(self.all_times, 0),
-            "all_energies": minmax_normalize(self.all_energies, 0)
+            "gains": zscore_normalize(self.gains),
+            "data_sizes": zscore_normalize(self.data_sizes),
+            "frequecies": zscore_normalize(self.frequecies),
+            "powers": zscore_normalize(self.powers),
+            # "gains": self.gains,
+            # "data_sizes": self.data_sizes,
+            # "frequecies": self.frequecies,
+            "allocations": self.history_allocs,
+            # "times": self.history_times,
+            # "energies": self.history_energies,
+            # "all_times": sum_normalize(self.all_times),
+            # "all_energies": sum_normalize(self.all_energies)
         }
-        print(obs)
+        # print(obs)
         self.observation.update(obs)
-        observasion = self.dict_to_vector(self.observation)
-        done = self.comm_rounds >= self.alloc_steps
+        # observasion = self.dict_to_vector(self.observation)
+        # print(observasion.reshape((6, -1)))
         info = {
             "communication_rounds": self.comm_rounds,
             "total_time": total_time,
             "total_energy": total_energy,
             "sub_reward": reward,
         }
-        print(observasion.reshape((6, -1)))
-        return observasion, reward, done, done, info  # 新gym返回五个值。
+
+        done = self.comm_rounds >= self.alloc_steps
+        return obs, reward, done, done, info  # 新gym返回五个值。
 
     def dict_to_vector(self, observation):  # tianshou not support dict observation
         vector = []
@@ -292,9 +350,8 @@ class SubAllocEnv(gym.Env):
         print("federated progress done...")
 
 
-def make_sub_env(args, dataset, clients, model):
-    args = get_args()
-    model = MNISTResNet()
+def make_sub_env(args):
+    model = choose_model(args)
     attr_dicts = init_attr_dicts(args.num_clients)
     dataset = FedDataset(args)
     # == 初始化客户端数据集
@@ -305,126 +362,8 @@ def make_sub_env(args, dataset, clients, model):
     # ==
 
     env = SubAllocEnv(args, dataset, clients, model, env_type="train")
-    train_envs = SubAllocEnv(args, dataset, clients, model, env_type="train")
-    test_envs = SubAllocEnv(args, dataset, clients, model, env_type="test")
 
     train_envs = CustomDummyVectorEnv([lambda: env for _ in range(args.training_num)])
     test_envs = CustomDummyVectorEnv([lambda: env for _ in range(args.test_num)])
 
     return env, train_envs, test_envs
-
-
-if __name__ == "__main__":
-    args = get_args()
-    args = get_args()
-    dataset = FedDataset(args)
-    model = MNISTResNet()
-    attr_dicts = init_attr_dicts(args.num_clients)
-    # == 初始化客户端数据集
-    clients = init_clients(args.num_clients, model, dataset, attr_dicts, args)
-    for i in range(args.num_clients):
-        subset = dataset.get_client_data(i)
-        clients[i].local_dataset = subset
-    # ==
-    # === 计算 state_dim action_dim ===
-
-    action_dim = 5
-
-    env, train_envs, test_envs = make_sub_env(args, dataset, clients, model)
-
-    state_dim = 0
-    for key, space in env.observation_space.spaces.items():
-        if isinstance(space, spaces.Discrete):
-            state_dim += 1  # Discrete 空间是标量
-        elif isinstance(space, spaces.Box):
-            state_dim += np.prod(space.shape)
-        else:
-            raise ValueError(f"Unsupported space type: {type(space)}")
-
-    # == actor
-    from net.alloctor import *
-    actor = DirichletPolicy(state_dim=state_dim, action_dim=5, hidden_dim=256, constant=10).cuda()
-    # actor = MLPAllocator(state_dim=state_dim, action_dim=5, hidden_dim=256).cuda()
-    # actor = DiffusionAllocor(state_dim=state_dim, action_dim=5, hidden_dim=256).cuda()
-    actor_optim = torch.optim.Adam(actor.parameters(), 1e-3)
-
-    # === 指定 critic 以及对应optim ===
-    critic = Critic_V(state_dim=state_dim,).to(args.device)
-    #critic = DoubleCritic(state_dim=state_dim, action_dim=5, hidden_dim=256).to(args.device)
-    critic_optim = torch.optim.Adam(critic.parameters(), lr=1e-3)
-
-    # policy = TD3Policy(actor,
-    #                    actor_optim,
-    #                    critic,
-    #                    critic_optim=critic_optim,
-    #                    device=args.device,
-    #                    tau=0.005,
-    #                    gamma=0.99,
-    #                    policy_noise=0.2,
-    #                    noise_clip=0.5,
-    #                    alpha=2.5,
-    #                    )
-
-    policy = PPOPolicy(
-        actor,
-        critic,
-        optim_lr=1e-4,
-        dist_fn=torch.distributions.Categorical,
-        device=args.device,
-        ent_coef=0.02,
-    )
-
-    # )
-
-    # === tianshou 相关配置 ===
-    import random
-    buffer = VectorReplayBuffer(512, 1)
-    train_collector = Collector(policy, train_envs, buffer=buffer, exploration_noise=True)
-    test_collector = Collector(policy, test_envs, buffer=buffer)
-    selects = random.sample(range(10), 5)
-    print("=====")
-    train_envs.set_selects(selects)
-    train_envs.reset()
-
-    writer = SummaryWriter("./debug")
-    logger = BasicLogger(writer)  # 创建基础日志记录器
-
-    # trainer = OffpolicyTrainer(
-    #     policy,
-    #     train_collector,
-    #     test_collector,
-    #     max_epoch=args.epochs,
-    #     step_per_epoch=20,
-    #     step_per_collect=20,
-    #     episode_per_test=args.test_num,
-    #     batch_size=128,
-    #     update_per_step=1,
-    #     logger=logger,
-    #     save_best_fn=None,
-    # )
-    # train_collector.collect(20)
-    # exit()
-    trainer = OnpolicyTrainer(
-        policy,
-        train_collector,
-        test_collector,
-        max_epoch=args.epochs,
-        repeat_per_collect=2,  # diff with offpolicy_trainer
-        step_per_epoch=20,
-        step_per_collect=20,
-        episode_per_test=args.test_num,
-        batch_size=16,
-        logger=logger,
-        save_best_fn=None
-    )
-
-    print("start!!!!!!!!!!!!!!!")
-    for epoch, epoch_stat, info in trainer:
-        # selects = random.sample(range(10), 5)
-        # train_envs.set_selects(selects)
-        print("=======\nEpoch:", epoch)
-        print(epoch_stat)
-        print(info)
-        logger.write('epochs/stat', epoch, epoch_stat)
-
-    print("done")

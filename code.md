@@ -18,3 +18,8 @@ info:{
     'test_step': 30, 'test_episode': 3, 'test_time': '86.43s', 'test_speed': '0.35 step/s', 
     'best_reward': -541.509712166197, 'best_result': '-541.51 ± 0.00', 
     'train_step': 160, 'train_episode': 16, 'train_time/collector': '460.55s', 'train_speed': '0.35 step/s'}
+
+====
+# 关于env
+先有dataset，再有client，再有env。
+每个env会分配对应的训练集。

@@ -22,7 +22,7 @@ class DDPGPolicy(BasePolicy):
         self,
         actor: torch.nn.Module,
         actor_optim: torch.optim.Optimizer,
-        double_critic: torch.nn.Module,  # double critic
+        critic: torch.nn.Module,  # double critic
         critic_optim: torch.optim.Optimizer,
         device: torch.device,
         tau: float = 0.005,
@@ -48,10 +48,10 @@ class DDPGPolicy(BasePolicy):
         self.target_actor = deepcopy(actor)
         self.target_actor.eval()
 
-        # double critic
-        self.critic = double_critic
+        # critic
+        self.critic = critic
         self.critic_optim = critic_optim
-        self.target_critic = deepcopy(double_critic)
+        self.target_critic = deepcopy(critic)
         self.target_critic.eval()
 
         self.device = device
@@ -68,14 +68,17 @@ class DDPGPolicy(BasePolicy):
         self.rew_norm = reward_normalization
         self.n_step = estimation_step
 
-        self.total_bandwidth = total_bandwidth
+        self.lr_scheduler = torch.optim.lr_scheduler.LinearLR(
+                self.actor_optim, start_factor=1.0, end_factor=0.2, total_iters=50
+            )
 
     # === use to compute return ===
 
     def _target_q(self, buffer: ReplayBuffer, indices: np.ndarray) -> torch.Tensor:
         batch = buffer[indices]
         act_next = self.forward(batch, model="target_actor", input="obs_next").act
-        obs_next = torch.FloatTensor(batch.obs_next).to(self.device)
+        # obs_next = torch.FloatTensor(batch.obs_next).to(self.device)
+        obs_next = to_torch(batch.obs_next,device=self.device, dtype=torch.float32)
         target_q = self.target_critic(obs_next, act_next)
         return target_q
 
@@ -111,8 +114,12 @@ class DDPGPolicy(BasePolicy):
         self.actor_optim.zero_grad()
         actor_loss.backward()
         self.actor_optim.step()
+        self.lr_scheduler.step()
         for name, param in self.actor.named_parameters():
-            print(f"✅ Gradient exists for {name}, mean grad: {param.grad.mean()}!")
+            if param.grad is not None:
+                print(f"✅ Gradient exists for {name}, mean grad: {param.grad.mean()}!")
+            else:
+                print(f"⚠️ No gradient for {name}")
         self.soft_update(self.target_critic, self.critic, self.tau)
         self.soft_update(self.target_actor, self.actor, self.tau)
         return {
@@ -139,8 +146,8 @@ class DDPGPolicy(BasePolicy):
     def forward(self, batch: Batch, model: str = "actor", input: str = "obs", **kwargs: Any,) -> Batch:
         model = self.actor if model == "actor" else self.target_actor
         obs = to_torch(batch[input], device=self.device, dtype=torch.float32)
-        actions, hidden = model(obs), None
-        actions = F.softmax(actions, dim=-1)
+        actions = model(obs)
+        hidden = None
         return Batch(act=actions, state=hidden)
 
     def exploration_noise(self, act: Union[np.ndarray, Batch], batch: Batch) -> Union[np.ndarray, Batch]:

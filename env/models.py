@@ -1,25 +1,67 @@
-from torchvision.models import resnet18, resnet34, resnet50, resnet101, resnet152
-from torch.nn import Module, Conv2d, Linear, MaxPool2d
-import math
-import torch.nn as nn
-import copy
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 
-
-class MNISTResNet(nn.Module):
-    def __init__(self, num_classes=10):
-        super(MNISTResNet, self).__init__()
-        # 加载 ResNet18 作为基础模型
-        self.base_model = resnet18(pretrained=False)
-        
-        # 修改输入层以适配 MNIST (单通道)
-        self.base_model.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
-        
-        # 修改输出层以适配 num_classes
-        num_features = self.base_model.fc.in_features
-        self.base_model.fc = nn.Linear(num_features, num_classes)
+class MNIST_CNN(nn.Module):
+    def __init__(self):
+        super(MNIST_CNN, self).__init__()
+        self.conv1 = nn.Conv2d(1, 4, kernel_size=5)
+        self.conv2 = nn.Conv2d(4, 8, kernel_size=5)
+        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.fc = nn.Linear(8 * 4 * 4, 10)  # For 28x28 input: ((28-4)/2-4)/2 = 4x4
 
     def forward(self, x):
-        return self.base_model(x)
+        x = self.pool(F.relu(self.conv1(x)))  # 28x28 -> 24x24 -> 12x12
+        x = self.pool(F.relu(self.conv2(x)))  # 12x12 -> 8x8 -> 4x4
+        x = x.view(-1, 8 * 4 * 4)
+        x = self.fc(x)
+        return x
 
+class FashionMNIST_LeNet5(nn.Module):
+    def __init__(self):
+        super(FashionMNIST_LeNet5, self).__init__()
+        self.conv1 = nn.Conv2d(1, 6, kernel_size=5)
+        self.conv2 = nn.Conv2d(6, 16, kernel_size=5)
+        self.pool = nn.AvgPool2d(kernel_size=2, stride=2)
+        self.fc1 = nn.Linear(16 * 4 * 4, 120)  # For 28x28 input: ((28-4)/2-4)/2 = 4x4
+        self.fc2 = nn.Linear(120, 84)
+        self.fc3 = nn.Linear(84, 10)
+
+    def forward(self, x):
+        x = self.pool(F.relu(self.conv1(x)))  # 28x28 -> 24x24 -> 12x12
+        x = self.pool(F.relu(self.conv2(x)))  # 12x12 -> 8x8 -> 4x4
+        x = x.view(x.size(0), -1)
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
+        x = self.fc3(x)
+        return x
+
+class CIFAR10_LeNet5(nn.Module):
+    def __init__(self):
+        super(CIFAR10_LeNet5, self).__init__()
+        self.conv1 = nn.Conv2d(3, 6, kernel_size=5)
+        self.conv2 = nn.Conv2d(6, 16, kernel_size=5)
+        self.pool = nn.AvgPool2d(kernel_size=2, stride=2)
+        self.fc1 = nn.Linear(16 * 5 * 5, 120)  # For 32x32 input: ((32-4)/2-4)/2 = 5x5
+        self.fc2 = nn.Linear(120, 84)
+        self.fc3 = nn.Linear(84, 10)
+
+    def forward(self, x):
+        x = self.pool(F.relu(self.conv1(x)))  # 32x32 -> 28x28 -> 14x14
+        x = self.pool(F.relu(self.conv2(x)))  # 14x14 -> 10x10 -> 5x5
+        x = x.view(x.size(0), -1)
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
+        x = self.fc3(x)
+        return x
+
+def choose_model(args):
+    dataset = args.dataset
+    if dataset == "MNIST":
+        return MNIST_CNN()
+    elif dataset == "Fashion":
+        return FashionMNIST_LeNet5()
+    elif dataset == "CIFAR10":
+        return CIFAR10_LeNet5()
+    else:
+        raise ValueError(f"Unsupported dataset: {dataset}")

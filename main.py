@@ -24,55 +24,57 @@ from net import *
 
 from datetime import datetime
 
-
 if __name__ == "__main__":
     args = get_args()
-    env, train_envs, test_envs = gen_env(args)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    if args.task == 'acc':
+        args.rew_b = args.rew_c = args.rew_d = 0.0
 
-    # === 计算 state_dim action_dim ===
-    state_dim = 0
-    for key, space in env.observation_space.spaces.items():
-        if isinstance(space, spaces.Discrete):
-            state_dim += 1  # Discrete 空间是标量
-        elif isinstance(space, spaces.Box):
-            state_dim += np.prod(space.shape)
-        else:
-            raise ValueError(f"Unsupported space type: {type(space)}")
-    action_dim = args.num_clients
-    state_dim = 70
     # === 指定 actor 以及对应optim ===
-    actor, critic = choose_actor_critic(state_dim, action_dim, args)
+    num_choose = args.num_choose
+    state_dim = (args.input_dim + args.hidden_size) * args.num_clients
+    print(state_dim, num_choose, args)
+    actor, critic = choose_actor_critic(state_dim, num_choose, args)
     actor_optim = torch.optim.Adam(actor.parameters(), args.actor_lr)
     critic_optim = torch.optim.Adam(critic.parameters(), lr=args.critic_lr)
 
     # === 初始化RL模型 ===
     policy = choose_policy(actor, actor_optim, critic, critic_optim, args)
 
+    # env
+    env, train_envs, test_envs = gen_env(args)
     # === 日志地址 模型存取 ===
     if args.evaluate or args.resume:
         exp_dir = args.ckpt_dir
     else:
         now = datetime.now()
         timestamp = now.strftime("%Y%m%d_%H%M%S")
-        exp_dir = f"exp/{timestamp}"
+        exp_dir = f"exp/{args.algo}/{args.dataset}/alpha={str(args.dir_alpha)}/lrs={args.local_rounds}/{timestamp}"
         if not args.no_logger:
             os.makedirs(exp_dir, exist_ok=True)
             with open(f"{exp_dir}/config.txt", "w") as f:
-                config_des = f"dataset_{args.dataset}_epochs_{args.epochs}_algo_{args.algo}_dbranch_{args.dbranch}"
+                config_des = f"dataset_{args.dataset}_epochs_{args.epochs}_algo_{args.algo}"
                 f.write(f"{config_des}\n")
                 f.write('args:\n')
                 for k, v in vars(args).items():
                     f.write(f"{k}: {v}\n")
 
-    PATH = os.path.join(exp_dir, args.algo + "_ckpt.pth")
+    BEST_PATH = os.path.join(exp_dir, args.algo + "_best.pth")
+    CKPT_PATH = os.path.join(exp_dir, args.algo + "_ckpt.pth")
 
     def save_best_fn(model):
-        torch.save(model.state_dict(), PATH)
+        torch.save(model.state_dict(), BEST_PATH)
 
-    if args.resume == True or args.evaluate == True:
-        print("model path:", PATH)
-        policy.load_state_dict(torch.load(PATH))
-        print("model loaded!")
+    def save_checkpoint_fn(model):
+        torch.save(model.state_dict(), CKPT_PATH)
+
+    if args.evaluate:
+        print("model path:", BEST_PATH)
+        policy.load_state_dict(torch.load(BEST_PATH))
+    elif args.resume:
+        print("model path:", CKPT_PATH)
+        policy.load_state_dict(torch.load(CKPT_PATH))
 
     # === tianshou 相关配置 ===
     buffer = VectorReplayBuffer(512, 1)
@@ -93,27 +95,14 @@ if __name__ == "__main__":
             test_collector,
             max_epoch=args.epochs,
             repeat_per_collect=2,  # diff with offpolicy_trainer
-            step_per_epoch=args.epochs,
-            step_per_collect=args.step_per_collect,
+            step_per_epoch=args.global_rounds,
+            episode_per_collect=1,
             episode_per_test=args.test_num,
-            batch_size=16,
+            batch_size=args.rl_batch_size,
             logger=logger,
             save_best_fn=save_best_fn,
         )
-        # trainer = OffpolicyTrainer(
-        #     policy,
-        #     train_collector,
-        #     test_collector,
-        #     max_epoch=args.epochs,
-        #     step_per_epoch=args.global_rounds,
-        #     step_per_collect=args.global_rounds,
-        #     episode_per_test=args.test_num,
-        #     batch_size=args.datas_per_update,
-        #     update_per_step=args.update_per_step,
-        #     logger=logger,
-        #     save_best_fn=save_best_fn,
-        # )
-        
+
         print("start!!!!!!!!!!!!!!!")
         for epoch, epoch_stat, info in trainer:
             print("=======\nEpoch:", epoch)
@@ -125,6 +114,7 @@ if __name__ == "__main__":
     print("======== evaluate =======")
     np.random.seed(args.seed)
     policy.eval()
+    env.is_fed_train = True
     obs, info = env.reset()  # 重置环境，返回初始观测值
     result_dict = {
         'current_round': [],
@@ -147,12 +137,13 @@ if __name__ == "__main__":
             act = act.cpu().detach().numpy()  # policy.forward 返回一个 batch，使用 ".act" 来取出里面action的数据
         obs, rew, done, done, info = env.step(act)
         for key, value in info.items():
-            result_dict[key].append(value)
+            if key in result_dict:
+                result_dict[key].append(value)
         if done:
             break
     env.close()
 
     print(result_dict)
     # res_dir = f"result/{timestamp}"
-    with open(f"{exp_dir}/result.json", "w") as f:
+    with open(f"{exp_dir}/{args.algo}_{args.dataset}_result.json", "w") as f:
         json.dump(result_dict, f, indent=4)

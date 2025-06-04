@@ -103,13 +103,10 @@ class PGPolicy(BasePolicy):
         return batch
 
     def forward(self, batch: Batch, state: Optional[Union[dict, Batch, np.ndarray]] = None, **kwargs: Any,) -> Batch:
-        print(batch.obs)
-        obs = to_torch(batch.obs, device=self.device, dtype=torch.float32)  # bs*(10x4)
-        # act, hidden, log_ll, first_dist, entropy = self.actor(obs, self.training)
-        act, log_p = self.actor(obs)
-        # act = np.zeros((obs.shape[0], 10), np.int32)
-        # act[np.arange(obs.shape[0])[:, None], selects.cpu()] = 20
-        return Batch(act=act, state=None, log_prob=log_p)
+        obs = to_torch(batch.obs, device=self.device, dtype=torch.float32)  # bs*(numclients x statedim)
+        print("is train:", self.training)
+        act, log_ll, entropy = self.actor(obs, self.training)
+        return Batch(act=act, state=None, log_prob=log_ll, entropy=entropy)
 
     def learn(self, batch: Batch, batch_size: int, repeat: int, **kwargs: Any) -> Dict[str, List[float]]:
         losses = []
@@ -117,7 +114,7 @@ class PGPolicy(BasePolicy):
             for minibatch in batch.split(batch_size, merge_last=True):
                 self.optim.zero_grad()
                 result = self(minibatch)
-                ret = to_torch(minibatch.returns, torch.float, result.act.device)
+                ret = to_torch(minibatch.returns, torch.float, self.device)
                 log_prob = result.log_prob.reshape(len(ret), -1).transpose(0, 1)
                 print(ret, log_prob)
                 loss = -(log_prob * ret).mean()
@@ -126,7 +123,8 @@ class PGPolicy(BasePolicy):
                 losses.append(loss.item())
 
             for name, param in self.actor.named_parameters():
-                print(f"✅ Gradient exists for {name}, mean grad: {param.grad.mean()}!")
+                if param.grad is not None:
+                    print(f"✅ Gradient exists for {name}, mean grad: {param.grad.mean()}!")
 
         return {"loss": losses}
 
