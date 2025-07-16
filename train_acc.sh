@@ -1,11 +1,18 @@
 #!/bin/bash
+#--fed_train \
+#--add_noise \
+#--hungarian \
+# layer rms batch
+# --acc_delta
+#MNIST Fashion CIFAR10
 
-COMMON_ARGS="\
-    --epochs 65 \
+python main.py \
+    --epochs 70 \
     --task acc \
+    --dataset CIFAR10 \
+    --algo ppo \
     --fed_train \
-    --method dirichlet \
-    --dir_alpha 1.0 \
+    --dir_alpha 0.5 \
     --local_rounds 1 \
     --global_rounds 100 \
     --num_clients 100 \
@@ -23,17 +30,13 @@ COMMON_ARGS="\
     --select_num_heads 8 \
     --select_num_layers 3 \
     --select_norm_type layer \
-    --select_decoder single \
+    --select_decoder mask \
     --window_size 5 \
     --hidden_size 5 \
     --alloc_hidden_dim 64 \
     --alloc_num_heads 4 \
     --alloc_num_layers 2 \
     --alloc_norm_type layer \
-    --episode_per_collect 2 \
-    --rl_batch_size 16"
-
-parallel -j 6 --lb --halt soon,fail=1 \
-    'python main.py '"$COMMON_ARGS"' --dataset {1} --algo {2} --remark gailefedlr1gailedir1gailerew' \
-    ::: MNIST Fashion CIFAR10 \
-    ::: ppo pg
+    --episode_per_collect 1 \
+    --rl_batch_size 32 \
+    --remark 'jianglicost100->10'

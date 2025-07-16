@@ -27,6 +27,8 @@ from tianshou.data import Collector
 import re
 from types import SimpleNamespace
 
+AVG = False
+
 
 def load_args_from_txt(file_path):
     with open(file_path, 'r') as f:
@@ -58,7 +60,8 @@ def load_args_from_txt(file_path):
                 value = int(value)
 
             args_dict[key] = value
-
+    if 'LSTM' not in args_dict:
+        args_dict['LSTM'] = True
     # 强制移除 ckpt_dir
     args_dict.pop("ckpt_dir", None)
 
@@ -67,7 +70,7 @@ def load_args_from_txt(file_path):
 
 if __name__ == "__main__":
     args = get_args()
-    root_exp_dir = args.ckpt_dir  #顶层目录
+    root_exp_dir = args.ckpt_dir  # 顶层目录
     print("Experiment root:", root_exp_dir)
 
     def is_leaf_dir(d):
@@ -98,7 +101,10 @@ if __name__ == "__main__":
 
         # 初始化模型
         num_choose = args.num_choose
-        state_dim = (args.input_dim + args.hidden_size) * args.num_clients
+        if args.LSTM:
+            state_dim = (args.input_dim + args.hidden_size) * args.num_clients
+        else:
+            state_dim = args.input_dim * args.num_clients
         actor, critic = choose_actor_critic(state_dim, num_choose, args)
         actor_optim = torch.optim.Adam(actor.parameters(), args.actor_lr)
         critic_optim = torch.optim.Adam(critic.parameters(), lr=args.critic_lr)
@@ -131,13 +137,16 @@ if __name__ == "__main__":
                 'total_energy': [],
                 'reward': [],
             }
-
+            rec_act = []
             done = False
             while not done:
                 batch = Batch(obs=[obs], info=info)
                 act = policy(batch).act[0]
                 if isinstance(act, torch.Tensor):
                     act = act.cpu().detach().numpy()
+                if AVG == True:
+                    act[1] = np.full(num_choose, 1.0 / num_choose)
+                rec_act.append(act[0])
                 obs, rew, done, done, info = env.step(act)
                 for key, value in info.items():
                     if key in result_dict:
@@ -155,5 +164,11 @@ if __name__ == "__main__":
                 returns.insert(0, G)
             print("Return:", G)
 
-            with open(os.path.join(subdir, f.replace(".pth", "_result.json")), "w") as f_out:
-                json.dump(result_dict, f_out, indent=4)
+            if AVG == False:
+                with open(os.path.join(subdir, f.replace(".pth", "_result.json")), "w") as f_out:
+                    json.dump(result_dict, f_out, indent=4)
+            else:
+                with open(os.path.join(subdir, f.replace(".pth", "_avg_result.json")), "w") as f_out:
+                    json.dump(result_dict, f_out, indent=4)
+            # with open(os.path.join(subdir, f.replace(".pth", "_recact.json")), "w") as f_out:
+            #     json.dump(rec_act, f_out, indent=4)

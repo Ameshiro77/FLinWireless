@@ -23,8 +23,7 @@ class GaussianPolicy(nn.Module):
             nn.Linear(state_dim, hidden_dim),
             nn.LeakyReLU(),
             nn.Linear(hidden_dim, 1),
-            # nn.Tanh(),
-            # nn.Linear(hidden_dim, 1),
+            nn.LeakyReLU(),
         )
 
         self.actor_logstd = nn.Parameter(torch.rand(1, action_dim))
@@ -34,36 +33,27 @@ class GaussianPolicy(nn.Module):
         # self.action_bias = torch.tensor(0.5)
 
     def forward(self, state, is_training=True):
-
-        action_mean = (torch.tanh(self.mu(state).squeeze(-1)) + 1) / 2
-        # action_mean = self.mu(state).squeeze(-1)
-        # log_std = self.log_std(x)
-        # std = log_std.exp()
+        # action_mean = (torch.tanh(self.mu(state).squeeze(-1)) + 1) / 2
+        action_mean = self.mu(state).squeeze(-1)  # [B, 10]
         action_logstd = self.actor_logstd.expand_as(action_mean)      # 扩展成和 action_mean 一样形状
         normal = Normal(action_mean, torch.exp(action_logstd))
         # normal = Normal(action_mean, action_logstd)
-      
-        samples = normal.sample()
-        z = (torch.tanh(samples) + 1 ) / 2
-        
+
+        samples = normal.rsample()
+        # z = (torch.tanh(samples) + 1 ) / 2
+        z = torch.softmax(samples, dim=-1)
         log_prob = normal.log_prob(z)
-        log_prob = log_prob - torch.log(1 - torch.tanh(z).pow(2) + 1e-7)
-        
-        #print("logstd", action_logstd)
-        #print("samples",samples)
-        # z = torch.clip(samples, 0, 1)
-        
-        
+        log_prob = log_prob - torch.log(1 - z.pow(2) + 1e-7)
+
         if is_training:
-            # action = torch.softmax(z, dim=-1)
-            action = z / torch.sum(z, dim=-1, keepdim=True)
+            action = z
         else:
-            # action = torch.softmax(action_mean, dim=-1)
-            action = action_mean / torch.sum(action_mean, dim=-1, keepdim=True)
-            
-        #print("log_pi", log_pi)
+            action = torch.softmax(action_mean, dim=-1)
+
+        # print("log_pi", log_pi)
+        print("a:", action)
         print(action_mean, action_logstd)
-        return action, None, log_prob.sum(-1), normal.entropy().sum(-1)
+        return action, log_prob.sum(-1), normal.entropy().sum(-1)
 
 
 class DirichletPolicy(nn.Module):
@@ -77,25 +67,32 @@ class DirichletPolicy(nn.Module):
             nn.Tanh(),
             nn.Linear(hidden_dim, 1),
         )
+        self.policy2 = nn.Sequential(
+            nn.Linear(state_dim, 1),
+            nn.LeakyReLU(),
+        )
         self.constant = constant
         self.apply(weights_init_)
 
     def forward(self, state, is_training=True):
         x = self.policy(state).squeeze(-1)
+        # x = self.policy2(state).squeeze(-1)  # [B, 10]
         print("alloc policy logits:", x)
         # alpha = F.softplus(x) + 1E-3
         alpha = torch.exp(x) + 1e-3
         dist = Dirichlet(alpha)
         print("dirichlet alpha:", alpha)
         if is_training:
-            actions = dist.sample()
+            actions = dist.rsample()
         else:
+            # actions = dist.sample()
             actions = alpha / torch.sum(alpha, dim=-1, keepdim=True)  # dirichlet的期望
         log_probs = dist.log_prob(actions)
         return actions, log_probs, dist.entropy()
         # return actions, log_probs
 
 # continous allocator for DPG-style
+
 
 class AllocEncoder(nn.Module):
     def __init__(self, input_dim, embed_dim, num_heads, num_layers, norm_type='layer'):
@@ -121,14 +118,18 @@ class AllocEncoder(nn.Module):
 
 class AllocDecoder(nn.Module):
 
-    def __init__(self, state_dim, num_choose, num_heads=4):
+    def __init__(self, state_dim, num_choose, num_heads=4, method='d'):
         super().__init__()
-        self.net = DirichletPolicy(state_dim, num_choose, hidden_dim=256)
-        # self.net = GaussianPolicy(state_dim, num_choose, hidden_dim=256)
+        if method == 'd':
+            self.net = DirichletPolicy(state_dim, num_choose, hidden_dim=256)
+        elif method == 'g':
+            self.net = GaussianPolicy(state_dim, num_choose, hidden_dim=256)
+            # self.net = GaussianPolicy(state_dim, num_choose, hidden_dim=256)
 
     def forward(self, x, is_training=False):  # x: [B, K, H], 每个 client 的状态
         allocation, log_prob, entropy = self.net.forward(x, is_training)
         return allocation, log_prob, entropy
+
 
 class MLPAllocator(nn.Module):
     def __init__(self, state_dim, action_dim, hidden_dim=256):

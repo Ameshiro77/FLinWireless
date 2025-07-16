@@ -31,7 +31,7 @@ class PPOPolicy(A2CPolicy):
         max_grad_norm: Optional[float] = None,
         gae_lambda: float = 0.95,
         max_batchsize: int = 256,
-        scheduler_iters: int = 1000,
+        scheduler_iters: int = 100,
         optim=None,
         **kwargs: Any,
     ) -> None:
@@ -49,6 +49,7 @@ class PPOPolicy(A2CPolicy):
         self._grad_norm = max_grad_norm
         self._batch = max_batchsize
         self._lambda = gae_lambda
+        self.step_times = 0
         # self._actor_critic: ActorCritic
         # self.optim = torch.optim.Adam(self._actor_critic.parameters(), lr=optim_lr)
         self.actor = actor
@@ -56,8 +57,11 @@ class PPOPolicy(A2CPolicy):
         self.actor_optim = actor_optim
         self.critic_optim = critic_optim
         self.lr_scheduler = torch.optim.lr_scheduler.LinearLR(
-            self.actor_optim, start_factor=1.0, end_factor=0.1, total_iters=scheduler_iters
+            self.actor_optim, start_factor=1.0, end_factor=0.05, total_iters=scheduler_iters
         ) if scheduler_iters > 0 else None
+        # self.lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        #     self.actor_optim, T_max=scheduler_iters, eta_min=1e-5
+        # ) if scheduler_iters > 0 else None
 
     def process_fn(
         self, batch: Batch, buffer: ReplayBuffer, indices: np.ndarray
@@ -111,6 +115,7 @@ class PPOPolicy(A2CPolicy):
 
     def forward(self, batch: Batch, state: Optional[Union[dict, Batch, np.ndarray]] = None, **kwargs: Any,) -> Batch:
         obs = to_torch(batch.obs, device=self.device, dtype=torch.float32)  # bs*(numclients x statedim)
+        # print(obs)
         print("is train:", self.training)
         act, log_ll, entropy = self.actor(obs, self.training)
         return Batch(act=act, state=None, log_prob=log_ll, entropy=entropy)
@@ -118,10 +123,9 @@ class PPOPolicy(A2CPolicy):
     def learn(  # type: ignore
         self, batch: Batch, batch_size: int, repeat: int, **kwargs: Any
     ) -> Dict[str, List[float]]:
-        print("!!!!!!bs", batch_size)
         losses, clip_losses, vf_losses, ent_losses = [], [], [], []
         for step in range(repeat):
-            if self.cd and step > 0:
+            if self._recompute_adv and step > 0:
                 batch = self._compute_returns(batch, self._buffer, self._indices)
             for minibatch in batch.split(batch_size, merge_last=True):
                 # calculate loss for actor
@@ -137,13 +141,13 @@ class PPOPolicy(A2CPolicy):
                 # exit()
                 # print(log_prob.shape, minibatch.logp_old.shape)
                 # exit()
-                clipped_delta_logp = torch.clamp(log_prob - minibatch.logp_old, 0, 1.1)
+                clipped_delta_logp = torch.clamp(log_prob - minibatch.logp_old, -1.1, 1.1)
                 ratio = torch.exp(torch.sum(clipped_delta_logp, dim=-1))  # log(x/y) = logx - logy
                 # ratio = (log_prob - minibatch.logp_old).exp().float()  # trick: e^(logx-logy) = x/y cause y is small
-                print("log_prob", log_prob)
-                print("logp_old", minibatch.logp_old)
-                print("adv", minibatch.adv)
-                print("ratio", ratio)
+                # print("log_prob", log_prob)
+                # print("logp_old", minibatch.logp_old)
+                # print("adv", minibatch.adv)
+                # print("ratio", ratio)
                 ratio = ratio.reshape(ratio.size(0), -1).transpose(0, 1)
                 surr1 = ratio * minibatch.adv
                 surr2 = ratio.clamp(
@@ -155,10 +159,9 @@ class PPOPolicy(A2CPolicy):
                     clip_loss = -torch.where(minibatch.adv < 0, clip2, clip1).mean()
                 else:
                     clip_loss = -torch.min(surr1, surr2).mean()
-                
- 
+
                 # print(minibatch)
-                print("surr:", surr1, surr2)
+                # print("surr:", surr1, surr2)
                 # calculate loss for critic
                 value = self.critic(to_torch(minibatch.obs, device=self.device, dtype=torch.float32)).flatten()
                 if self._value_clip:
@@ -178,7 +181,7 @@ class PPOPolicy(A2CPolicy):
                 self.actor_optim.zero_grad()
                 self.critic_optim.zero_grad()
                 loss.backward()
-                print(clip_loss, vf_loss, ent_loss)
+                # print(clip_loss, vf_loss, ent_loss)
                 if self._grad_norm:  # clip large gradient
                     nn.utils.clip_grad_norm_(
                         self.actor.parameters(), max_norm=self._grad_norm
@@ -218,5 +221,10 @@ class PPOPolicy(A2CPolicy):
         self.post_process_fn(batch, buffer, indices)
         if self.lr_scheduler is not None:
             self.lr_scheduler.step()
+            self.step_times += 1
         self.updating = False
+        self._weight_ent *= 0.95 #熵系数衰减
+        print("step_times", self.step_times)
+        
+
         return result

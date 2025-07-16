@@ -9,8 +9,9 @@ import numpy as np
 # 用于特征预处理。特征来自环境的obs，通常是np。
 # 只处理需要LSTM处理的时序数据。
 class ObsProcessor(nn.Module):
-    def __init__(self, window_size, hidden_size):
+    def __init__(self, window_size, hidden_size, lstm=False):
         super().__init__()
+        self.use_lstm = lstm
         self.lstm = nn.LSTM(input_size=1, hidden_size=hidden_size, batch_first=True)
         self.window_size = window_size
         self.hidden_size = hidden_size
@@ -23,6 +24,7 @@ class ObsProcessor(nn.Module):
         for key in keys:
             value = obs[key]
             # print(key)
+            # print(value.shape)
             # value is a numpy array, convert it to a tensor
             if isinstance(value, np.ndarray):
                 value = torch.from_numpy(value).float().cuda()  # Convert to tensor and ensure it's float
@@ -33,15 +35,15 @@ class ObsProcessor(nn.Module):
                 batch_size, clients_num = value.shape[0], value.shape[1]
 
             if value.ndim == 3 and value.shape[-1] == self.window_size:
-                # Historical data, apply LSTM
-                # Reshape to: (batch_size * clients_num, window_size, 1)
-                seq = value.view(batch_size * clients_num, self.window_size, 1)
-                # Pass through LSTM
-                out, (h_n, c_n) = self.lstm.forward(seq)
-                feature = h_n[-1]  # (batch_size * clients_num, hidden_size)
-                # Reshape to (batch_size, clients_num, hidden_size)
-                feature = feature.view(batch_size, clients_num, self.hidden_size)
-                features_list.append(feature)
+                if self.use_lstm:
+                    # Historical data, apply LSTM
+                    seq = value.view(batch_size * clients_num, self.window_size, 1)
+                    out, (h_n, c_n) = self.lstm(seq)
+                    feature = h_n[-1]
+                    feature = feature.view(batch_size, clients_num, self.hidden_size)
+                    features_list.append(feature)
+                else:
+                    continue  # Skip if LSTM is not used
 
             else:
                 # Other features, directly append
@@ -49,7 +51,8 @@ class ObsProcessor(nn.Module):
                 features_list.append(feature)
 
         # Concatenate all features along the last dimension
-
+        # for feature in features_list:
+        #     print(feature.shape)
         final_feature = torch.cat(features_list, dim=-1)  # (batch_size, clients_num, total_feature_dim)
         # print(final_feature)
         # exit()
@@ -57,7 +60,7 @@ class ObsProcessor(nn.Module):
 
 
 class Critic_V(nn.Module):
-    def __init__(self, state_dim, hidden_dim=256, window_size=5, hidden_size=10, activation="mish"):
+    def __init__(self, state_dim, hidden_dim=256, window_size=5, hidden_size=10, activation="mish", LSTM=False):
         super().__init__()
         _act = nn.Mish if activation == "mish" else nn.LeakyReLU
         self.q_net = nn.Sequential(
@@ -67,7 +70,7 @@ class Critic_V(nn.Module):
             _act(),
             nn.Linear(hidden_dim, 1),
         )
-        self.LSTMProcessor = ObsProcessor(window_size=window_size, hidden_size=hidden_size)
+        self.LSTMProcessor = ObsProcessor(window_size=window_size, hidden_size=hidden_size, lstm=LSTM)
 
     def forward(self, obs):
         x = self.LSTMProcessor(obs)
@@ -173,4 +176,3 @@ class DoubleCritic(nn.Module):
 #         x = torch.cat([x, t, state], dim=1)  # 16(t) + action(x) + state
 #         x = self.mid_layer(x)
 #         return self.final_layer(x)
-

@@ -25,10 +25,11 @@ def choose_policy(actor, actor_optim, critic, critic_optim, args):
             critic_optim,
             dist_fn=torch.distributions.Categorical,
             device=args.device,
-            ent_coef=0.01,
+            ent_coef=args.ent_coef,
             #max_batchsize=32,
             max_grad_norm=0.5,
-            scheduler_iters= args.epochs * 5,
+            # advantage_normalization=True,
+            scheduler_iters= int(args.epochs * 0.8),
         )
     return policy
     algo = args.algo.split('_')[-1]

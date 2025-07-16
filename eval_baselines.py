@@ -35,25 +35,43 @@ if __name__ == "__main__":
     env.is_fed_train = True
 
     dataset = args.dataset
-    fcmt = {
-        'MNIST': 0.04,
-        'Fashion': 0.3,
-        'CIFAR10': 0.3,
-    }
+    alpha = args.dir_alpha
+
+    if alpha == 0.0:# 不同dir下数据集分布和大小也不同
+        fcmt = {
+            'MNIST': 0.04,
+            'Fashion': 0.2,
+            'CIFAR10': 0.18,
+        }
+    elif alpha == 0.5:  
+        fcmt = {
+            'MNIST': 0.04,
+            'Fashion': 0.15,
+            'CIFAR10': 0.18,
+        }
+    elif alpha == 1.0:
+        fcmt = {
+            'MNIST': 0.038,
+            'Fashion': 0.23,
+            'CIFAR10': 0.2,
+        }
+
     min_time = fcmt[dataset]
 
     fedavg_policy = (FedAvgPolicy(args), 'fedavg')
     greedy_policy = (GreedyPolicy(args), 'greedy')
     fedcs_policy = (FedCSPolicy(args, min_time), 'fedcs')
-    policies = [fedavg_policy, greedy_policy, fedcs_policy]
+    # policies = [greedy_policy, fedcs_policy,fedavg_policy]
+    policies = [fedavg_policy,fedcs_policy]
     # policies = [greedy_policy]
+    # policies = [greedy_policy,fedcs_policy]
     # policies = [fedcs_policy]
 
     dataset = args.dataset
     dir_coef = str(args.dir_alpha)
     num_clients = str(args.num_clients)
     lc_rds = str(args.local_rounds)
-        
+
     exp_dir = "results/" + f"{args.dataset}/" + f"alpha={dir_coef}/" + f"num={num_clients}/" + f"local_rounds={lc_rds}"
     os.makedirs(exp_dir, exist_ok=True)
 

@@ -183,6 +183,7 @@ class Client():
     def get_cost(self):
         cmp_t, com_t = self.get_computation_time(), self.get_communication_time()
         cmp_e, com_e = self.get_computation_energy(), self.get_communication_energy()
+        # cmp_t, com_e = 0, 0
         if self.args.log_client:
             print(f"client {self.id} cost:")
             print(f"client {self.id} gain: {self.attr_dict['gain']} ")
@@ -200,16 +201,15 @@ class Client():
     def update_gain(self):
         prev_gain = self.attr_dict['gain']
         gain_base = self.attr_dict['gain_base']
-        std = gain_base / 10.  # 控制扰动幅度 
+        std = gain_base / 10.  # 控制扰动幅度
         gain = np.random.normal(prev_gain, std)  # 高斯扰动
-        gain = np.clip(gain, gain_base - 2 *std, gain_base + 2 *std)
+        gain = np.clip(gain, gain_base - 2 * std, gain_base + 2 * std)
         self.attr_dict['gain'] = gain
 
     def reset_state(self):
         self.attr_dict['gain'] = self.attr_dict['gain_base']
 
 
-[]
 
 
 def init_clients(clients_num, model, dataset, attr_dicts, args):
@@ -238,14 +238,18 @@ def init_attr_dicts(client_num):
     # mu, sigma = (GAIN_MAX + GAIN_MIN)/2, (GAIN_MAX - GAIN_MIN)/6  # 均值±3σ覆盖大部分范围
     # gain = np.random.normal(mu, sigma, client_num)
     # gain = np.clip(gain, GAIN_MIN, GAIN_MAX)      # 强制截断到范围内
+    
     cpu_frequency = np.random.normal(CPU_FREQUENCY_MEAN, CPU_FREQUENCY_STD, client_num)
     cpu_frequency = np.clip(cpu_frequency, CPU_FREQUENCY_MEAN-CPU_FREQUENCY_STD, CPU_FREQUENCY_MEAN+CPU_FREQUENCY_STD)
     gain = np.random.uniform(GAIN_MIN, GAIN_MAX, client_num)
     transmit_power = np.random.uniform(TRANSMIT_POWER_MEAN-TRANSMIT_POWER_STD,
                                        TRANSMIT_POWER_MEAN+TRANSMIT_POWER_STD, client_num)
+    
+    
     # gain = np.linspace(GAIN_MAX, GAIN_MIN, client_num)
     # transmit_power = np.linspace(TRANSMIT_POWER_MEAN+TRANSMIT_POWER_STD,
     #  TRANSMIT_POWER_MEAN-TRANSMIT_POWER_STD, client_num)
+    
     # np.random.shuffle(gain)
     # np.random.shuffle(transmit_power)
     attr = Attribute(cpu_frequency, transmit_power, gain, gain_base=gain)

@@ -1,6 +1,2 @@
-Best Smoothed Accuracy Comparison (alpha=0.5, num=100)
-fedcs: 0.2977
-fedavg: 0.3904
-ppo: 0.3027
-greedy: 0.3201
-CIFAR10_result.json: 0.2986
+Best Accuracy Comparison (alpha=0.5, num=100)
+fedavg: 0.4884

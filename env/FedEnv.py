@@ -1,5 +1,5 @@
 import torch
-import time
+import time, os ,json
 from tianshou.env import DummyVectorEnv
 from client import Client
 from torch.utils.data import TensorDataset
@@ -17,14 +17,18 @@ from scipy.optimize import linear_sum_assignment
 
 
 def acc_func(x, dataset):
-    if dataset == 'MNIST':
+    if dataset == 'MNIST' or dataset == 'Fashion':
         k = 0.1
         n = 2.3
         a = 0.5
-    if dataset == 'Fashion':
-        k = 0.35
-        n = 2.5
-        a = 0.55
+    # if dataset == 'Fashion':
+    #     k = 0.35
+    #     n = 2.5
+    #     a = 0.55
+    # if dataset == 'MNIST' or dataset == 'Fashion':
+    #     k = 1
+    #     n = 3
+    #     a = 0.6
     elif dataset == 'CIFAR10':
         k = 1
         n = 3
@@ -69,6 +73,7 @@ class FederatedEnv(gym.Env):
         timestamp = now.strftime("%Y%m%d_%H%M%S")
         self.log_file = f"./logs/log_{timestamp}.txt"
         self.is_log = args.log_fed
+        self.dir_alpha = args.dir_alpha
         # ==
         self.original_model = copy.deepcopy(model)  # 每次reset用。
 
@@ -96,26 +101,26 @@ class FederatedEnv(gym.Env):
         self.latest_global_model = self._get_model_parameters()
         self.current_round = 0
         self.data_sizes = np.array([len(client.local_dataset) for client in self.clients])
-        self.gains = zscore_normalize([client.attr_dict["gain"] for client in self.clients])
+        self.gains = zscore_normalize([client.attr_dict["gain_base"] for client in self.clients])
         self.frequencies = zscore_normalize([client.attr_dict["cpu_frequency"] for client in self.clients])
         self.powers = zscore_normalize([client.attr_dict["transmit_power"] for client in self.clients])
         self.base_noise = args.base_noise
         self.noise_epsilon = 1e-5
         self.total_bandwidth = TOTAL_BLOCKS
         self.max_acc = {
-            'MNIST': 0.99,
-            'Fashion': 0.95,
-            'CIFAR10': 0.44
+            'MNIST': 0.999,
+            'Fashion': 0.999,
+            'CIFAR10': 0.999,
         }
 
         # self.qualities = self._get_data_qualities()
-        self.qualities = np.zeros(self.clients_num)
+      
         # 归一化用 . min T = min single T
         # rew
         if args.norm_cost:
             self.max_T, self.min_T, self.max_E, self.min_E = self._get_boundary_cost()
 
-        self.data_qualities = np.zeros(self.clients_num)  # reset()里计算
+        self.qualities = np.zeros(self.clients_num)  # reset()里计算
         self.all_allocations = np.zeros(self.clients_num)
         self.all_times = np.zeros(self.clients_num)
         self.all_energies = np.zeros(self.clients_num)
@@ -134,17 +139,38 @@ class FederatedEnv(gym.Env):
         self.observation = {}
 
     def _get_data_qualities(self):
+        print('get data qualities')
+        # 如果 JSON 文件存在且已包含该 key，直接读取
+        quality_key = f"{self.dataset_name}_{self.dir_alpha}"
+        json_path = "qualities.json"
+        if os.path.exists(json_path):
+            with open(json_path, "r") as f:
+                data = json.load(f)
+            if quality_key in data:
+                return np.array(data[quality_key])
+        
+        # skewness 
         losses = np.zeros(self.clients_num)
         train_loss = []
         for id, client in enumerate(self.clients):
-            _, stat = client.local_train(is_subset=True, local_rounds=5)  # 先训练本地的一小部分
+            _, stat = client.local_train(is_subset=True, local_rounds=10)  # 先训练本地的一小部分
             train_loss.append(stat['loss'])
             loss = client.valid_train(self.dataset.valid_data)  # 再用testdata训练获得loss来评估
             losses[id] = loss
         # self._reset_clients()
         qualities = losses
         print('qual:', qualities)
-        # exit()
+        
+        # write to json
+        if os.path.exists(json_path):
+            with open(json_path, "r") as f:
+                data = json.load(f)
+        else:
+            data = {}
+        data[quality_key] = qualities.tolist()
+        with open(json_path, "w") as f:
+            json.dump(data, f, indent=2)
+  
         return qualities
 
     def _reset_clients(self):
@@ -200,7 +226,6 @@ class FederatedEnv(gym.Env):
     # 需要返回初始state和info。
     def reset(self, seed=SEED, options=None):
         # 获得quality状态。由于客户端模型会变化，需要重新重置：严禁用测试集训练数据。
-        # 经过梯度下降算法，每次reset得到的值并不是一样的。所以是一个变化的状态
         self._reset_clients()
         self.qualities = self._get_data_qualities()
         self._reset_clients()
@@ -212,7 +237,6 @@ class FederatedEnv(gym.Env):
         self.latest_global_model = self._get_model_parameters()
         self.parti_times = np.zeros(self.clients_num)
 
-        # qualities = self._get_data_qualities()
         blank = np.zeros(self.clients_num)
         self.history_allocs = np.zeros((self.clients_num, self.window_size))
         self.all_allocations = blank
@@ -223,16 +247,18 @@ class FederatedEnv(gym.Env):
             "clients": self.clients,
             "parti_times": self.parti_times,
             "data_sizes": self.data_sizes,
-            "data_qualities": self.data_qualities,
+            "data_qualities": self.qualities,
+            # "gains": self.gains,
             # "data_sizes": self.data_sizes,
             # "data_qualities": self.qualities,
         }
         obs = {
             "data_qualities": zscore_normalize(self.qualities),
             "data_sizes": zscore_normalize(self.data_sizes),
-            "gains": self.gains,
-            "frequencies": self.frequencies,
-            "powers": self.powers,
+            "gains": zscore_normalize(self.gains),
+            "frequencies": zscore_normalize(self.frequencies),
+            "powers": zscore_normalize(self.powers),
+            # "parti_times": zscore_normalize(self.parti_times / self.global_rounds),
             "parti_times": self.parti_times / self.global_rounds,
             "allocations": self.history_allocs,
             # 最近一次分配的带宽
@@ -263,6 +289,7 @@ class FederatedEnv(gym.Env):
     def step(self, action):
         print("\n========")
         print(f"is fed train:{self.is_fed_train}")
+        print(f"dataset name:{self.dataset_name}")
 
         if isinstance(action, torch.Tensor):
             action = action.cpu().numpy()
@@ -362,34 +389,50 @@ class FederatedEnv(gym.Env):
             if args.acc_delta:
                 acc_rew = acc_func(global_acc, self.dataset_name) - acc_func(self.latest_acc, self.dataset_name)
             else:
-                acc_rew = np.power(64, global_acc)
-        else:
-            gain = sum(self.data_sizes[i] / self.data_qualities[i] for i in indices)
-            gain_all = sum(self.data_sizes[i] / self.data_qualities[i] for i in range(self.clients_num))
-            acc_rew = gain / gain_all
-        # acc_rew = global_acc
+                acc_rew = np.power(16, global_acc)
+        # else:
+        #     gain = sum(self.data_sizes[i] / self.qualities[i] for i in indices)
+        #     gain_all = sum(self.data_sizes[i] / self.qualities[i] for i in range(self.clients_num))
+        #     acc_rew = gain / gain_all
+        # # acc_rew = global_acc
 
         # == parti penalty
         if indices == []:
             penalty = 1
         else:
-            # pscore_max = ((1 + self.global_rounds)**args.penalty_coef - 1)  # * len(indices) *
-            # pscore = sum((1 + self.parti_times[i])**args.penalty_coef - 1 for i in indices)
-            # penalty = pscore / (pscore_max * self.num_choose)
             penalty = sum((1 + self.parti_times[i]/self.global_rounds)**args.penalty_coef - 1 for i in indices)
 
-        if self.task == 'acc':
-            reward = args.rew_a * acc_rew - args.rew_d * penalty
+        # ============
+        # reward design 
+        delta_acc = global_acc - self.latest_acc
+        if self.task == 'acc': #不考虑通信
+            reward = args.rew_a * acc_rew
+            reward_cost = 0
         elif self.task == 'hybrid':
             reward_cost = args.rew_b * time_rew + args.rew_c * energy_rew / self.num_choose
-            reward = args.rew_a * acc_rew - reward_cost - args.rew_d * penalty
+            if self.dataset_name == 'MNIST':
+                reward_cost = reward_cost * 10
+            if self.dataset_name == 'Fashion':
+                reward_cost = reward_cost * 2
+                # ★
+                # reward = (global_acc + delta_acc) * 1 - reward_cost
+            reward = args.rew_a * acc_rew - reward_cost
+                # 
+                # if delta_acc >= 0.:
+                #     reward = global_acc + delta_acc - reward_cost
+                # else:
+                #     reward = global_acc - 1
+            #     reward_cost = reward_cost
+            # reward = args.rew_a * acc_rew - reward_cost - args.rew_d * penalty
+            reward = reward * 10
 
         else:
             raise ValueError("task not supported")
+        # ===============
 
         print(
             f"reward: {reward} total_time: {total_time} total_energy: {total_energy} reward T&E: {args.rew_b*time_rew}, {args.rew_c * energy_rew / self.num_choose}\n\
-              global acc: {global_acc} last global acc: {self.latest_acc} acc_rew: {args.rew_a * acc_rew} \n\
+              global acc: {global_acc} last global acc: {self.latest_acc} rew_acc: {args.rew_a * acc_rew} rew_cost: {reward_cost}\n\
               penalty: {penalty} parti_times: {self.parti_times} \n\
               abcd:{args.rew_a},{args.rew_b},{args.rew_c},{args.rew_d}")
         # ======================
@@ -422,15 +465,16 @@ class FederatedEnv(gym.Env):
         self.history_allocs[:, -1] = 0
         self.history_allocs[indices, -1] = action[1]
         obs = {
-            "data_qualities": zscore_normalize(self.data_qualities),
+            "data_qualities": zscore_normalize(self.qualities),
             "data_sizes": zscore_normalize(self.data_sizes),
             "gains": zscore_normalize([client.attr_dict["gain"] for client in self.clients]),
-            "frequencies": self.frequencies,
-            "powers": self.powers,
+            "frequencies": zscore_normalize(self.frequencies),
+            "powers": zscore_normalize(self.powers),
             "parti_times": self.parti_times / self.global_rounds,
+            # "parti_times": zscore_normalize(self.parti_times / self.global_rounds),
             "allocations": self.history_allocs,
         }
-        # print(obs)
+        # print(obs["gains"])
         # self.observation.update(obs)
         # observasion = self.dict_to_vector(self.observation)
 
@@ -438,7 +482,7 @@ class FederatedEnv(gym.Env):
             "clients": self.clients,
             "current_round": self.current_round,
             "data_sizes": self.data_sizes,
-            "data_qualities": self.data_qualities,
+            "data_qualities": self.qualities,
             "global_accuracy": global_acc,
             "total_time": total_time,
             "total_energy": total_energy,
@@ -529,6 +573,9 @@ class FederatedEnv(gym.Env):
                 vector.extend(value)
         return np.array(vector, dtype=np.float32)
 
+def save_qualities(qualities, filename="qualities.npy"):
+    np.save(filename, qualities)
+    print(f"Data qualities saved to {filename}")
 
 if __name__ == "__main__":
     # example usage:
@@ -538,6 +585,7 @@ if __name__ == "__main__":
     np.random.seed(args.seed)
     dataset = FedDataset(args)
     model = choose_model(args)
+    args.update_gain = True
 
     attr_dicts = init_attr_dicts(args.num_clients)
 
@@ -555,6 +603,8 @@ if __name__ == "__main__":
 
     env = FederatedEnv(args, dataset, clients, model=model)
     state, info = env.reset()
+    
+    qualities = env._get_data_qualities()
     print("env reset!init state:", state)
 
     print("====\nstart training")

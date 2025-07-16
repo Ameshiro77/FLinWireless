@@ -1,0 +1,2 @@
+Best Accuracy Comparison (alpha=0.5, num=100)
+fedavg: 0.8716

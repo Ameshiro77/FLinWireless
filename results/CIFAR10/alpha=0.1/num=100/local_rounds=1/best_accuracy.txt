@@ -1,0 +1,7 @@
+Best Accuracy Comparison (alpha=0.1, num=100)
+fedavg: 0.2932
+ppo: 0.3063
+pg: 0.2973
+ppo_best_result.json: 0.3423
+fedcs: 0.2519
+greedy: 0.2747

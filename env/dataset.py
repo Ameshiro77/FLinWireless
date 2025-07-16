@@ -1,4 +1,5 @@
 import argparse
+from types import SimpleNamespace
 import torch
 import torchvision
 import torchvision.transforms as transforms
@@ -25,11 +26,8 @@ class FedDataset(Dataset):
 
         self.dataset_name = args.dataset
         self.num_clients = args.num_clients  # 客户端数量。根据id分配。
-        self.alpha = args.dir_alpha  #noniid分布因子
-        if self.alpha == 0:
-            self.method = 'shards'
-        else:
-            self.method = 'dirichlet'
+        self.alpha = args.dir_alpha  # noniid分布因子
+
         self.batch_size = args.batch_size
         self.data_dir = args.data_dir
         self.non_iid = args.non_iid
@@ -41,6 +39,10 @@ class FedDataset(Dataset):
         valid_indices = random.sample(range(len(self.test_data)), len(self.test_data) // 10)
         self.valid_data = Subset(self.test_data, valid_indices)
 
+        if self.alpha == 0.0:
+            self.method = 'iid'
+        else:
+            self.method = 'dirichlet'
         self.partition = self.get_federated_partition(self.dataset_name, self.train_data.targets)
         self.client_data_indices = self.partition.client_dict
 
@@ -54,44 +56,67 @@ class FedDataset(Dataset):
         # ref:https://github.com/SMILELab-FL/FedLab-benchmarks/blob/master/fedlab_benchmarks/datasets/fmnist/fmnist_tutorial.ipynb
         if self.method == 'dirichlet':
             mnist_meth = 'noniid-labeldir'
-        elif self.method == 'shards':
-            mnist_meth = "noniid-#label"
-
-        if dataset_name == 'CIFAR10':
-            partitioner = CIFAR10Partitioner(
-                targets=targets,
-                num_clients=self.num_clients,
-                balance=None,
-                partition=self.method,  ## dirichlet | shards
-                num_shards=2 * self.num_clients,
-                dir_alpha=self.alpha,
-                seed=self.seed,
-            )
-        elif dataset_name == 'Fashion':
-            partitioner = FMNISTPartitioner(
-                targets=targets,
-                num_clients=self.num_clients,
-                partition=mnist_meth,
-                dir_alpha=self.alpha,
-                major_classes_num=2,
-                seed=self.seed,
-            )
-        elif dataset_name == 'MNIST':
-            partitioner = MNISTPartitioner(
-                targets=targets,
-                num_clients=self.num_clients,
-                partition=mnist_meth,
-                dir_alpha=self.alpha,
-                major_classes_num=2,
-                seed=self.seed,
-            )
+            if dataset_name == 'CIFAR10':
+                partitioner = CIFAR10Partitioner(
+                    targets=targets,
+                    num_clients=self.num_clients,
+                    balance=None,
+                    partition=self.method,  # dirichlet | shards
+                    num_shards=2 * self.num_clients,
+                    dir_alpha=self.alpha,
+                    seed=self.seed,
+                )
+            elif dataset_name == 'Fashion':
+                partitioner = FMNISTPartitioner(
+                    targets=targets,
+                    num_clients=self.num_clients,
+                    partition=mnist_meth,
+                    dir_alpha=self.alpha,
+                    major_classes_num=2,
+                    seed=self.seed,
+                )
+            elif dataset_name == 'MNIST':
+                partitioner = MNISTPartitioner(
+                    targets=targets,
+                    num_clients=self.num_clients,
+                    partition=mnist_meth,
+                    dir_alpha=self.alpha,
+                    major_classes_num=2,
+                    seed=self.seed,
+                )
+        elif self.method == 'iid':
+            if dataset_name == 'CIFAR10':
+                partitioner = CIFAR10Partitioner(
+                    targets=targets,
+                    num_clients=self.num_clients,
+                    balance=False,
+                    partition=self.method,
+                    unbalance_sgm=0.3,
+                    seed=self.seed,
+                )
+            elif dataset_name == 'Fashion':
+                # partitioner = FMNISTPartitioner(
+                #     targets=targets,
+                #     num_clients=self.num_clients,
+                #     partition="iid", 
+                #     seed=self.seed,
+                # )
+                partitioner = self.iid_split()
+            elif dataset_name == 'MNIST':
+                # partitioner = MNISTPartitioner(
+                #     targets=targets,
+                #     num_clients=self.num_clients,
+                #     partition='iid',
+                #     seed=self.seed,
+                # )
+                partitioner = self.iid_split()
         else:
             raise ValueError("Unsupported dataset. Choose from 'MNIST', 'CIFAR10', or 'Fashion'.")
-        csv_file = f"./data/dist/{dataset_name}_{self.method}.csv"
+        csv_file = f"./data/dist/{dataset_name}_{self.alpha}.csv"
         partition_report(
             targets,
             partitioner.client_dict,
-            class_num=10,  #都是10
+            class_num=10,  # 都是10
             verbose=False,
             file=csv_file)
         return partitioner
@@ -133,37 +158,29 @@ class FedDataset(Dataset):
 
         return train_data, test_data
 
-    def non_iid_split(self):
-        # Get labels for all training samples
-        targets = np.array(self.train_data.targets)
-        num_classes = len(np.unique(targets))
-
-        # Dirichlet distribution to simulate non-iid
-        client_data_indices = {i: [] for i in range(self.num_clients)}
-        for c in range(num_classes):
-            # Get indices for all data points with class c
-            class_indices = np.where(targets == c)[0]
-            np.random.shuffle(class_indices)
-
-            # Sample from Dirichlet distribution
-            proportions = np.random.dirichlet([self.alpha] * self.num_clients)
-            proportions = (proportions * len(class_indices)).astype(int)
-
-            # Assign indices to clients
-            start_idx = 0
-            for i in range(self.num_clients):
-                client_data_indices[i].extend(class_indices[start_idx:start_idx + proportions[i]])
-                start_idx += proportions[i]
-
-        return client_data_indices
-
     def iid_split(self):
         indices = np.arange(len(self.train_data))
         np.random.shuffle(indices)
-        split_indices = np.array_split(indices, self.num_clients)
-        client_data_indices = {i: split.tolist() for i, split in enumerate(split_indices)}
 
-        return client_data_indices
+        # 设置数量不均但分布 IID
+        unbalance_sgm = 0.3
+        mean_size = len(indices) / self.num_clients
+        client_sample_counts = np.random.normal(loc=mean_size, scale=unbalance_sgm * mean_size, size=self.num_clients)
+        client_sample_counts = np.clip(client_sample_counts, a_min=10, a_max=None)
+        client_sample_counts = (client_sample_counts / np.sum(client_sample_counts) * len(indices)).astype(int)
+
+        # 调整总量误差
+        diff = len(indices) - np.sum(client_sample_counts)
+        for i in range(abs(diff)):
+            client_sample_counts[i % self.num_clients] += np.sign(diff)
+
+        client_dict = {}
+        start = 0
+        for i, count in enumerate(client_sample_counts):
+            client_dict[i] = indices[start:start + count].tolist()
+            start += count
+
+        return SimpleNamespace(client_dict=client_dict)
 
     # 根据id返回给定客户端的数据
     def get_client_data(self, client_id):
@@ -175,6 +192,7 @@ class FedDataset(Dataset):
 
     def get_test_dataloader(self):
         return DataLoader(self.test_data, batch_size=self.batch_size, shuffle=False)\
+
 
     def get_data_distribution(self):
         # Analyze data distribution for each client
@@ -207,11 +225,11 @@ if __name__ == "__main__":
 
     federated_dataset = FedDataset(args)
 
-    # print(federated_dataset.get_client_data_sizes())
+    print(federated_dataset.get_client_data_sizes())
 
-    # data_distribution = federated_dataset.get_data_distribution()
-    # for client_id, dist in data_distribution.items():
-    #     print(f"Client {client_id}: {dist}")
+    data_distribution = federated_dataset.get_data_distribution()
+    for client_id, dist in data_distribution.items():
+        print(f"Client {client_id}: {dist}")
 
     # client_subset = federated_dataset.get_client_data(client_id=0)
     # client_loader = DataLoader(client_subset, batch_size=args.batch_size, shuffle=True)

@@ -47,6 +47,7 @@ class SelectDecoder(nn.Module):
         selected_clients = torch.zeros(batch_size, self.num_selects, dtype=torch.long, device=encoder_output.device)
         pi = torch.zeros(batch_size, self.num_selects, device=encoder_output.device)
         log_pi = torch.zeros(batch_size, self.num_selects, device=encoder_output.device)
+        entropy_per_step = torch.zeros(batch_size, self.num_selects, device=encoder_output.device)  # 记录每一步的熵
 
         h_mean = torch.mean(encoder_output, dim=1).unsqueeze(1)
         h_first = torch.zeros_like(h_mean)
@@ -68,6 +69,8 @@ class SelectDecoder(nn.Module):
             # scores[mask] = float('-inf')
             log_probs = F.log_softmax(scores, dim=-1)
             probs = torch.exp(log_probs)
+            dist = torch.distributions.Categorical(probs)  # 创建分类分布
+            entropy_per_step[:, step] = dist.entropy()  # 直接调用entropy()方法计算熵
             # print(probs)
             if step == 0:
                 first_dist = torch.distributions.Categorical(probs.clone())
@@ -96,6 +99,7 @@ class SelectDecoder(nn.Module):
         # selected_clients: 每步选中的动作索引
         # pi: 每步被选中动作的概率
         # joint_entropy: 整个策略序列的联合熵,用于约束
-        # joint_entropy = -log_pi.sum(dim=-1)
-        entropy = first_dist.entropy()
+        # entropy = -log_pi.sum(dim=-1)
+        entropy = entropy_per_step.sum(dim=-1)
+        # entropy = first_dist.entropy()
         return selected_clients, pi, entropy

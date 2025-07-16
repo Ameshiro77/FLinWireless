@@ -58,6 +58,7 @@ class SubAllocEnv(gym.Env):
         self.env_type = env_type
         self.is_alloc_train = False  # 用于区分是否在训练。训练时需要针对选中客户端做cost归一化，奖励函数不一样。
         self.comm_rounds = 0
+        self.window_size = args.window_size
         self.alloc_steps = args.alloc_steps
         self.clients = clients
 
@@ -69,7 +70,7 @@ class SubAllocEnv(gym.Env):
         self.selects = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
         self.max_T, self.min_T, self.max_E, self.min_E = self._get_boundary_cost()
         # STATE
-        self.gains = np.array([client.attr_dict["gain"] for client in self.clients[:self.selects_num]])
+        self.gains = np.array([client.attr_dict["gain_base"] for client in self.clients[:self.selects_num]])
         self.data_sizes = np.array([len(client.local_dataset) for client in self.clients[:self.selects_num]])
         self.frequecies = np.array([client.attr_dict["cpu_frequency"] for client in self.clients[:self.selects_num]])
         self.powers = np.array([client.attr_dict["transmit_power"] for client in self.clients[:self.selects_num]])
@@ -82,7 +83,7 @@ class SubAllocEnv(gym.Env):
         self.all_times = np.zeros(self.selects_num)
         self.all_energies = np.zeros(self.selects_num)
 
-        self.history_allocs = np.zeros((self.clients_num, 5))
+        self.history_allocs = np.zeros((self.clients_num, self.window_size))
         self.history_times = np.zeros(self.clients_num)
         self.history_energies = np.zeros(self.clients_num)
 
@@ -172,17 +173,15 @@ class SubAllocEnv(gym.Env):
 
         # 重置各自客户端模型 以及 全局模型
         blank = np.zeros(self.selects_num)
-        self.history_allocs = np.zeros((self.clients_num, 5))
+        self.history_allocs = np.zeros((self.clients_num,self.window_size ))
         info = {}  # must dict
         obs = {
+            # "gains": minmax_normalize(self.gains, GAIN_MIN, GAIN_MAX),
             "gains": zscore_normalize(self.gains),
             "data_sizes": zscore_normalize(self.data_sizes),
             "frequecies": zscore_normalize(self.frequecies),
             "powers": zscore_normalize(self.powers),
-            # "gains": self.gains,
-            # "data_sizes": self.data_sizes,
-            # "frequecies": self.frequecies,
-            "allocations": self.history_allocs,
+            # "allocations": self.history_allocs,
             # "times": blank,
             # "energies": blank,
             # "all_times": blank,
@@ -193,7 +192,6 @@ class SubAllocEnv(gym.Env):
         self.all_times = blank
         self.comm_rounds = 0
         self.observation.update(obs)
-        # obs = self.dict_to_vector(obs)
         # print("select:", self.selects)
         # print("reset", obs.reshape(6, -1))
         return obs, info
@@ -208,6 +206,7 @@ class SubAllocEnv(gym.Env):
         print("\n==Allocs==")
         print(f"train or test:{self.env_type}")
         print(action)
+        
         # if (action.sum()-1) > 0.001:
         #     raise ValueError('bandwidth sum error')
         if isinstance(action, torch.Tensor):
@@ -261,6 +260,7 @@ class SubAllocEnv(gym.Env):
         # ======================
         for client in self.clients:
             client.update_state()
+        self.gains = np.array([client.attr_dict["gain"] for client in self.clients[:self.selects_num]])    
 
         # == 设计奖励 & 返回值 ==
         time_rew = (total_time - self.min_T) / (
@@ -268,13 +268,13 @@ class SubAllocEnv(gym.Env):
         )  # min-max normalize
         energy_rew = (total_energy - self.min_E) / (self.max_E - self.min_E)
         # reward = (- args.rew_b * time_rew - args.rew_c * energy_rew) * 100
-        reward = (total_time + total_energy / 10) * -10
-        if (action.sum()-1) > 0.001:
-            reward = -500
+        # reward = (total_time + total_energy / 4) * -100
+        reward = - total_time * 50 - total_energy * 15
+        # reward = - total_energy * 15
         # min_rew = (- args.rew_b - args.rew_c) * 100
         # reward = min_rew if reward < min_rew else reward
         print(
-            f"Bandwidth alloc reward: {reward} total_time: {total_time} total_energy: {total_energy} reward T&E: {-time_rew}, {-energy_rew} \n\
+            f"Bandwidth alloc reward: {reward} total_time: {total_time} total_energy: {total_energy} reward T&E: {-total_time}, {-total_energy/5} \n\
                 max T AND E:{self.max_T}, {self.max_E} min T AND E:{self.min_T}, {self.min_E}")
         # ======================
 
@@ -293,20 +293,21 @@ class SubAllocEnv(gym.Env):
         self.history_energies[:-1] = self.history_energies[1:]
         self.history_energies[-1] = total_energy
 
+
         obs = {
+            # "gains": minmax_normalize(self.gains, GAIN_MIN, GAIN_MAX),
             "gains": zscore_normalize(self.gains),
             "data_sizes": zscore_normalize(self.data_sizes),
             "frequecies": zscore_normalize(self.frequecies),
             "powers": zscore_normalize(self.powers),
-            # "gains": self.gains,
-            # "data_sizes": self.data_sizes,
-            # "frequecies": self.frequecies,
-            "allocations": self.history_allocs,
+            # "allocations": self.history_allocs,
+            
             # "times": self.history_times,
             # "energies": self.history_energies,
             # "all_times": sum_normalize(self.all_times),
             # "all_energies": sum_normalize(self.all_energies)
         }
+        # print("obs:", obs)
         # print(obs)
         self.observation.update(obs)
         # observasion = self.dict_to_vector(self.observation)

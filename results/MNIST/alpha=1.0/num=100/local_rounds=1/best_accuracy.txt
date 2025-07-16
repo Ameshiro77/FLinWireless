@@ -1,4 +1,6 @@
-Best Smoothed Accuracy Comparison (alpha=1.0, num=100)
-fedavg: 0.9692
-fedcs: 0.9668
-greedy: 0.9284
+Best Accuracy Comparison (alpha=1.0, num=100)
+fedavg: 0.9706
+ppo: 0.9660
+fedcs: 0.9665
+pg: 0.9533
+greedy: 0.9280

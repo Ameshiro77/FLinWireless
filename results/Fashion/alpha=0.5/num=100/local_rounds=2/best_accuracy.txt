@@ -1,0 +1,3 @@
+Best Accuracy Comparison (alpha=0.5, num=100)
+fedavg: 0.8618
+ppo_best_result.json: 0.8425

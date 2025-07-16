@@ -34,13 +34,13 @@ class SelectActor(nn.Module):
 
 
 class AllocActor(nn.Module):
-    def __init__(self, input_dim, hidden_dim, num_heads, num_layers, num_selects, norm_type='layer'):
+    def __init__(self, input_dim, hidden_dim, num_heads, num_layers, num_selects, norm_type='layer', method='d'):
         super().__init__()
         self.input_dim = input_dim
         self.num_selects = num_selects
 
-        self.alloc_encoder = AllocEncoder(input_dim, hidden_dim, 1, num_layers, norm_type)
-        self.alloc_decoder = AllocDecoder(hidden_dim, num_selects, num_heads)
+        self.alloc_encoder = AllocEncoder(input_dim, hidden_dim, num_heads, num_layers, norm_type)
+        self.alloc_decoder = AllocDecoder(hidden_dim, num_selects, None, method=method)
 
     def forward(self, x, selected_indices, encoder_output=None, is_training=False):
         # Encode and allocate
@@ -51,14 +51,14 @@ class AllocActor(nn.Module):
 
 
 class AttenActor(nn.Module):
-    def __init__(self, select_actor, alloc_actor, window_size=5, hidden_size=10):
+    def __init__(self, select_actor, alloc_actor, window_size=5, hidden_size=10, lstm=False):
         super().__init__()
         # self.num_clients = select_actor.num_clients
         # self.input_dim = select_actor.input_dim
 
         self.select_actor = select_actor
         self.alloc_actor = alloc_actor
-        self.LSTMProcessor = ObsProcessor(window_size=window_size, hidden_size=hidden_size)
+        self.LSTMProcessor = ObsProcessor(window_size=window_size, hidden_size=hidden_size, lstm=lstm)
 
     def forward(self, obs_dict, is_training=False):
         x = self.LSTMProcessor(obs_dict)

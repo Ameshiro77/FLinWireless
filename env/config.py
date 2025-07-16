@@ -14,7 +14,7 @@ N0 = 4e-18  # -174dbm/HZ = 4e-21 W/HZ
 CYCLES_PER_SAMPLE = 1e5
 SEED = 42
 
-# 一个资源块的带宽
+# 一个资源块的带宽 2E4
 B = 2e4
 
 # 总资源块数量
@@ -46,7 +46,7 @@ def get_args():
     parser.add_argument('--log_fed', action='store_true', default=False, help="log federated process")
     parser.add_argument('--log_client', action='store_true', default=False, help="log client loss/T/E")
     parser.add_argument('--local_rounds', type=int, default=1, help='Number of local training rounds')
-    parser.add_argument('--global_rounds', type=int, default=20, help='Number of global training rounds')
+    parser.add_argument('--global_rounds', type=int, default=100, help='Number of global training rounds')
     parser.add_argument('--fed_lr', type=float, default=0.001, help="federated learning rate")
     parser.add_argument('--fed_optim', type=str, default='adam',
                         choices=['adam', 'sgd'], help="Optimizer for federated learning")
@@ -81,14 +81,17 @@ def get_args():
     parser.add_argument('--select_decoder', type=str, default='mask', choices=['mask', 'single'])
 
     # alloc
+    parser.add_argument('--alloc_method', type=str, default='d', choices=['d', 'g'],
+                        help="Allocation method to use.")
     parser.add_argument('--alloc_hidden_dim', type=int, default=128, help="hidden dim of select net")
     parser.add_argument('--alloc_num_heads', type=int, default=1, help="num_heads of select net")
     parser.add_argument('--alloc_num_layers', type=int, default=2, help="num_layers of select net")
     parser.add_argument('--alloc_norm_type', type=str, default='layer', choices=['layer', 'batch', 'rms'])
 
     # rl traning
+    parser.add_argument('--LSTM', action='store_true', default=False)
     parser.add_argument('--algo', type=str, default='ppo')
-    parser.add_argument('--alloc_steps', type=int, default=20)
+    parser.add_argument('--alloc_steps', type=int, default=100)
     # parser.add_argument('--dbranch', action="store_true", default=False, help='if use 2 branch')
     # parser.add_argument('--threshold', type=float, default=0.8)
     # parser.add_argument('--lambda_1', type=float, default=1.0, help='loss align')
@@ -102,6 +105,7 @@ def get_args():
     parser.add_argument('--rl_batch_size', type=int, default=16, help='rl batch size')
     parser.add_argument('--step_per_collect', type=int, default=20, help='')
     parser.add_argument('--episode_per_collect', type=int, default=1, help='')  # 这两个只能取一个。
+    parser.add_argument('--ent_coef', type=float, default=0.02, help='entropy coefficient')
 
     parser.add_argument('--training_num', type=int, default=1, help='testing epochs')
     parser.add_argument('--test_num', type=int, default=1, help='testing epochs')
