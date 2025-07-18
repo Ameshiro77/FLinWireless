@@ -1,4 +1,4 @@
-from net.diffusion import Diffusion
+
 from net.model import MLP as NoiseMLP
 from net.model import DoubleCritic
 import torch

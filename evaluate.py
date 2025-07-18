@@ -62,6 +62,8 @@ def load_args_from_txt(file_path):
             args_dict[key] = value
     if 'LSTM' not in args_dict:
         args_dict['LSTM'] = True
+    if 'norm_xi' not in args_dict:
+        args_dict['norm_xi'] = False
     # 强制移除 ckpt_dir
     args_dict.pop("ckpt_dir", None)
 

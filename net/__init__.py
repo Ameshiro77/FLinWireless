@@ -7,13 +7,15 @@ from net.atten_actor import *
 
 
 class SingleSelector(nn.Module):
-    def __init__(self, window_size, hidden_size, selector, lstm=True):
+    def __init__(self, window_size, hidden_size, selector, input_dim, embed_dim=128, lstm=True):
         super().__init__()
         self.selector = selector
+        self.embedding = nn.Linear(input_dim, embed_dim)
         self.LSTMProcessor = ObsProcessor(window_size=window_size, hidden_size=hidden_size, lstm=lstm)
 
     def forward(self, obs_dict, is_training=False):
         x = self.LSTMProcessor(obs_dict)
+        x = self.embedding(x)
         selected_indices, logp_select, entropy_select, encoder_output = self.selector(x, is_training)
         return selected_indices, logp_select, entropy_select
 
@@ -40,10 +42,11 @@ def choose_actor_critic(state_dim, num_selects, args):
         alloc_actor = AllocActor(input_dim, alloc_hidden_dim, alloc_num_heads,
                                  alloc_num_layers, num_selects, alloc_norm_type).to(args.device)
 
-        actor = AttenActor(select_actor, alloc_actor, window_size, hidden_size, lstm=lstm).to(args.device)
+        actor = AttenActor(select_actor, alloc_actor, window_size, hidden_size,
+                           input_dim=input_dim, num_clients=num_clients, lstm=lstm).to(args.device)
 
         # critic = DoubleCritic(state_dim, action_dim, 256).to(args.device)
-        critic = Critic_V(state_dim, 256, window_size, hidden_size, lstm).to(args.device)
+        critic = Critic_V(state_dim, 256, window_size, hidden_size, LSTM=lstm).to(args.device)
         return actor, critic
 
     elif args.task == "acc":
@@ -55,8 +58,9 @@ def choose_actor_critic(state_dim, num_selects, args):
             input_dim, select_hidden_dim, select_num_heads, select_num_layers, num_clients, num_selects,
             norm_type=select_norm_type, decoder_type=select_decoder_type).to(
             args.device)
-        actor = SingleSelector(window_size, hidden_size, select_actor, lstm=lstm).to(args.device)
-        critic = Critic_V(state_dim, 256, window_size, hidden_size, lstm).to(args.device)
+        actor = SingleSelector(window_size, hidden_size, select_actor, input_dim=input_dim,
+                               embed_dim=select_hidden_dim, lstm=lstm).to(args.device)
+        critic = Critic_V(state_dim, 256, window_size, hidden_size, LSTM=lstm).to(args.device)
 
         return actor, critic
 

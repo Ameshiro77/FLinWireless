@@ -21,8 +21,8 @@ class SelectActor(nn.Module):
         self.select_decoder = SelectDecoder(hidden_dim, num_heads, num_selects=num_selects, decoder_type=decoder_type)
 
     def forward(self, x, is_training=False):
-        if len(x.shape) == 2:  # Reshape input if x: B * (N*S)
-            x = x.view(x.shape[0], self.input_dim, self.num_clients).permute(0, 2, 1)  # B * N * Input
+        # if len(x.shape) == 2:  # Reshape input if x: B * (N*S)
+        #     x = x.view(x.shape[0], self.input_dim, self.num_clients).permute(0, 2, 1)  # B * N * Input
         encoder_output = self.select_encoder.forward(x)  # [B, num_clients(SEQ), hidden_dim]
         selected_indices, pi, entropy_select = self.select_decoder(encoder_output, is_training)  # [B, k]
         logp_select = torch.log(pi)  # π(at|s,a1:t-1) 为防止NaN在PPO中clip.
@@ -51,17 +51,25 @@ class AllocActor(nn.Module):
 
 
 class AttenActor(nn.Module):
-    def __init__(self, select_actor, alloc_actor, window_size=5, hidden_size=10, lstm=False):
+    def __init__(
+            self, select_actor, alloc_actor, window_size=5, hidden_size=5, input_dim=4, num_clients=100, embed_dim=128,
+            lstm=False):
         super().__init__()
         # self.num_clients = select_actor.num_clients
         # self.input_dim = select_actor.input_dim
-
+        self.embedding = nn.Linear(input_dim, embed_dim)
         self.select_actor = select_actor
         self.alloc_actor = alloc_actor
+        self.input_dim = input_dim
+        self.num_clients = num_clients
         self.LSTMProcessor = ObsProcessor(window_size=window_size, hidden_size=hidden_size, lstm=lstm)
 
     def forward(self, obs_dict, is_training=False):
         x = self.LSTMProcessor(obs_dict)
+        if len(x.shape) == 2:  # Reshape input if x: B * (N*S)
+            x = x.view(x.shape[0], self.input_dim, self.num_clients).permute(0, 2, 1)  # B * N * Input
+
+        x = self.embedding(x)
         # assert x.shape[1] == self.num_clients * self.input_dim, \
         #     f"Expected [B, {self.num_clients*self.input_dim}], got {x.shape}"
         # # Reshape . X:B*(inputdim*N) -> B * N * Input
@@ -71,7 +79,7 @@ class AttenActor(nn.Module):
         selected_indices, logp_select, select_entropy, encoder_output = self.select_actor(x, is_training)
         # Allocation
         allocation, logp_alloc, alloc_entropy = self.alloc_actor(x, selected_indices, is_training)
-
+        # print(selected_indices,allocation)
         # Combine results
         act = self._to_act(selected_indices, allocation)
         # log_p = logp_alloc + logp_select
@@ -81,6 +89,7 @@ class AttenActor(nn.Module):
         # entropy = select_entropy + alloc_entropy
         print(select_entropy.shape, alloc_entropy.shape)
         print(select_entropy, alloc_entropy)
+        # print(act,log_p, select_entropy + alloc_entropy)
         # exit()
         return act, log_p, select_entropy + alloc_entropy
 
@@ -105,9 +114,9 @@ def train_actor(model, num_clients, input_dim, num_epochs=10, batch_size=2, lr=1
             x = x.to(device)
             dict = {'obs': x}  # 模拟输入字典
             optimizer.zero_grad()
-            act, selected_hidden, log_ll, joint_entropy = model.forward(dict, is_training=True)
+            act,  log_ll, joint_entropy = model.forward(dict, is_training=True)
             # 损失函数，这里简单使用 -log_likelihood + joint_entropy 作为训练目标
-            loss = (-log_ll + 0.01 * joint_entropy).mean()
+            loss = (-log_ll.sum() + 0.01 * joint_entropy).mean()
             print(loss)
 
             loss.backward()
@@ -140,7 +149,7 @@ if __name__ == "__main__":
 
     select_actor = SelectActor(input_dim, hidden_dim, num_heads, num_layers, num_clients, num_selects)
     alloc_actor = AllocActor(input_dim, hidden_dim, num_heads, num_layers, num_selects)
-    model = AttenActor(select_actor, alloc_actor)
+    model = AttenActor(select_actor, alloc_actor,num_clients=num_clients,embed_dim=hidden_dim)
     train_actor(model,
                 num_clients,
                 input_dim,

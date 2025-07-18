@@ -14,11 +14,11 @@ class SelectEncoder(nn.Module):
 
     def __init__(self, input_dim, embed_dim, num_heads, num_layers, norm_type='layer'):
         super().__init__()
-        self.embedding = nn.Linear(input_dim, embed_dim)
+        # self.embedding = nn.Linear(input_dim, embed_dim)
         self.layers = nn.ModuleList([EncoderLayer(embed_dim, num_heads, norm_type='layer') for _ in range(num_layers)])
 
     def forward(self, x):
-        x = self.embedding(x)  # h = Wx + b
+        # x = self.embedding(x)  # h = Wx + b
         for layer in self.layers:
             x = layer(x, x, x)
         return x

@@ -57,6 +57,7 @@ def get_args():
     parser.add_argument('--update_gain', action='store_true', default=False, help="update gain")
 
     # reward
+    parser.add_argument('--norm_xi', action='store_true', default=False, help="normalize xi")
     parser.add_argument('--norm_cost', action='store_true', default=False, help="normalize cost")
     parser.add_argument('--acc_delta', action='store_true', default=False,
                         help="use △acc( U(acc_t+1)-U(acc_t) ) instead of a^acc")

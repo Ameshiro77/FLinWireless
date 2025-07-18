@@ -1,6 +1,7 @@
 Best Accuracy Comparison (alpha=1.0, num=100)
-fedavg: 0.9706
+fedavg: 0.9704
 ppo: 0.9660
-fedcs: 0.9665
+fedcs: 0.9666
 pg: 0.9533
+racsba: 0.9649
 greedy: 0.9280

@@ -71,8 +71,6 @@ if __name__ == "__main__":
 
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
-    if args.task == 'acc':
-        args.rew_b = args.rew_c = args.rew_d = 0.0
 
     # === 指定 actor 以及对应optim ===
     num_choose = args.num_choose

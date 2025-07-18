@@ -13,6 +13,7 @@ batch_size: 16
 data_dir: ./data
 non_iid: True
 log_fed: False
+norm_xi: False
 log_client: False
 local_rounds: 1
 global_rounds: 100

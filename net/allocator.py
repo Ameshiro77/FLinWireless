@@ -78,12 +78,13 @@ class DirichletPolicy(nn.Module):
         x = self.policy(state).squeeze(-1)
         # x = self.policy2(state).squeeze(-1)  # [B, 10]
         print("alloc policy logits:", x)
-        # alpha = F.softplus(x) + 1E-3
+        # alpha = 100*torch.exp(x)
         alpha = torch.exp(x) + 1e-3
         dist = Dirichlet(alpha)
         print("dirichlet alpha:", alpha)
         if is_training:
             actions = dist.rsample()
+            # actions = alpha / torch.sum(alpha, dim=-1, keepdim=True)
         else:
             # actions = dist.sample()
             actions = alpha / torch.sum(alpha, dim=-1, keepdim=True)  # dirichlet的期望
@@ -97,24 +98,18 @@ class DirichletPolicy(nn.Module):
 class AllocEncoder(nn.Module):
     def __init__(self, input_dim, embed_dim, num_heads, num_layers, norm_type='layer'):
         super().__init__()
-        self.embedding = nn.Linear(input_dim, embed_dim)
-        # self.layer = EncoderLayer(input_dim, num_heads)
-        self.embedding = nn.Linear(input_dim, embed_dim)
+        
+        # self.embedding = nn.Linear(input_dim, embed_dim)
         self.layers = nn.ModuleList([EncoderLayer(embed_dim, num_heads, norm_type) for _ in range(num_layers)])
         # self.mha = nn.MultiheadAttention(input_dim, num_heads, batch_first=True)
 
     def forward(self, x, select_indices, num_layers=2):
         # x = self.embedding(x)  # h = Wx + b
-        selected_x = torch.gather(x, dim=1, index=select_indices.unsqueeze(-1).expand(-1, -1, x.size(-1)))  # (B, K, H)
-        x = self.embedding(selected_x)  # h = Wx + b
+        x = torch.gather(x, dim=1, index=select_indices.unsqueeze(-1).expand(-1, -1, x.size(-1)))  # (B, K, H)
+        # x = self.embedding(selected_x)  # h = Wx + b
         for layer in self.layers:
             x = layer(x, x, x)
         return x
-        # selected_x = self.embedding(selected_x)  # (B, K, H)
-        # x, _ = self.mha.forward(selected_x, selected_x, selected_x)
-        # x = x.contiguous().view(x.size(0), -1)  # must flatten
-        return x
-
 
 class AllocDecoder(nn.Module):
 

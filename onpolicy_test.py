@@ -46,11 +46,11 @@ class AllocActor2(nn.Module):
 
         self.decoder = DirichletPolicy(state_dim=embed_dim, action_dim=action_dim, hidden_dim=hidden_dim)
         # self.decoder = GaussianPolicy(state_dim=embed_dim, action_dim=action_dim, hidden_dim=hidden_dim)
-        self.LSTMProcessor = ObsProcessor(window_size=window_size, hidden_size=hidden_size)
+        self.LSTMProcessor = ObsProcessor(window_size=window_size, hidden_size=hidden_size, lstm=self.LSTM)
 
     def forward(self, obs_dict, is_training=True):
         x = self.LSTMProcessor(obs_dict)
-        print(x.shape)
+        x = self.embedding(x)  
         x = self.encoder2.forward(x)
 
         # x = self.embedding(x)
@@ -101,7 +101,8 @@ if __name__ == "__main__":
     actor_optim = torch.optim.Adam(actor.parameters(), 1e-4)
 
     # === 指定 critic 以及对应optim ===
-    critic = Critic_V(state_dim=state_dim, window_size=args.window_size, hidden_size=args.hidden_size).to(args.device)
+    critic = Critic_V(state_dim=state_dim, window_size=args.window_size,
+                      hidden_size=args.hidden_size, LSTM=args.LSTM).to(args.device)
     critic_optim = torch.optim.Adam(critic.parameters(), lr=1e-3)
 
     policy = PPOPolicy(

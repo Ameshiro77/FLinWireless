@@ -181,7 +181,7 @@ class SubAllocEnv(gym.Env):
             "data_sizes": zscore_normalize(self.data_sizes),
             "frequecies": zscore_normalize(self.frequecies),
             "powers": zscore_normalize(self.powers),
-            # "allocations": self.history_allocs,
+            "allocations": self.history_allocs,
             # "times": blank,
             # "energies": blank,
             # "all_times": blank,
@@ -269,7 +269,8 @@ class SubAllocEnv(gym.Env):
         energy_rew = (total_energy - self.min_E) / (self.max_E - self.min_E)
         # reward = (- args.rew_b * time_rew - args.rew_c * energy_rew) * 100
         # reward = (total_time + total_energy / 4) * -100
-        reward = - total_time * 50 - total_energy * 15
+        # reward = - total_time * 20
+        reward = - total_time * 20 - total_energy * 1
         # reward = - total_energy * 15
         # min_rew = (- args.rew_b - args.rew_c) * 100
         # reward = min_rew if reward < min_rew else reward
@@ -300,7 +301,7 @@ class SubAllocEnv(gym.Env):
             "data_sizes": zscore_normalize(self.data_sizes),
             "frequecies": zscore_normalize(self.frequecies),
             "powers": zscore_normalize(self.powers),
-            # "allocations": self.history_allocs,
+            "allocations": self.history_allocs,
             
             # "times": self.history_times,
             # "energies": self.history_energies,

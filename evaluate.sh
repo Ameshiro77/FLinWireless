@@ -4,6 +4,6 @@
 # --ckpt_dir exp/ppo/CIFAR10/alpha=0.5/lrs=1 \
 python evaluate.py \
     --evaluate \
-    --ckpt_dir exp/ppo/CIFAR10/alpha=0.0/lrs=1/20250712_151634 \
+    --ckpt_dir exp/ppo/Fashion/alpha=0.5/lrs=1/20250717_203644 \
    
     

@@ -61,8 +61,12 @@ if __name__ == "__main__":
     fedavg_policy = (FedAvgPolicy(args), 'fedavg')
     greedy_policy = (GreedyPolicy(args), 'greedy')
     fedcs_policy = (FedCSPolicy(args, min_time), 'fedcs')
+    racs_policy = (RACSAptPolicy(args), 'racsba')
+    eecs_policy = (EECSPolicy(args), 'eecs')
+    policies = [racs_policy]
+    # policies = [eecs_policy]
     # policies = [greedy_policy, fedcs_policy,fedavg_policy]
-    policies = [fedavg_policy,fedcs_policy]
+    # policies = [fedavg_policy,fedcs_policy]
     # policies = [greedy_policy]
     # policies = [greedy_policy,fedcs_policy]
     # policies = [fedcs_policy]

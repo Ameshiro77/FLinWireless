@@ -70,6 +70,7 @@ class Critic_V(nn.Module):
             _act(),
             nn.Linear(hidden_dim, 1),
         )
+        self.LSTM = LSTM
         self.LSTMProcessor = ObsProcessor(window_size=window_size, hidden_size=hidden_size, lstm=LSTM)
 
     def forward(self, obs):
